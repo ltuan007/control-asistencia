@@ -105,6 +105,11 @@ select.field{appearance:none; -webkit-appearance:none;}
 .act-btns .btn{flex:1; font-size:24px; padding:26px 10px; border-radius:20px;}
 .suggested{animation:pulse 1.6s infinite; box-shadow:0 0 0 3px #ffffff33;}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 3px #ffffff22}50%{box-shadow:0 0 0 7px #ffffff0e}}
+.cam-wrap{position:relative; width:150px; height:150px; margin:0 auto; border-radius:50%; overflow:hidden; border:3px solid var(--border); background:#0a1120;}
+.cam-wrap video{width:100%; height:100%; object-fit:cover; transform:scaleX(-1);}
+.cam-note{font-size:12.5px; color:var(--muted); margin-top:8px;}
+#confPhoto{width:110px; height:110px; border-radius:50%; object-fit:cover; margin:0 auto 16px; display:block; border:3px solid var(--border); transform:scaleX(-1);}
+#photoModal img{width:100%; max-width:340px; border-radius:14px; display:block; margin:0 auto;}
 
 /* ---------- Confirmación ---------- */
 #confirmOverlay{z-index:80;}
@@ -210,7 +215,9 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
 <!-- ===== Acción: Entrada / Salida ===== -->
 <div id="actionView" class="overlay hidden">
   <div class="modal">
+    <div class="cam-wrap hidden" id="camWrap"><video id="camVideo" autoplay playsinline muted></video></div>
     <div id="actAvatar" class="avatar" style="margin:0 auto; width:74px; height:74px; font-size:26px;"></div>
+    <div class="cam-note hidden" id="camNote">📷 Se tomará una foto al marcar</div>
     <div id="actName"></div>
     <div id="actLast"></div>
     <div id="actClock"></div>
@@ -225,6 +232,7 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
 <!-- ===== Confirmación ===== -->
 <div id="confirmOverlay" class="overlay hidden">
   <div class="modal conf-card">
+    <img id="confPhoto" class="hidden" alt="">
     <div class="conf-icon" id="confIcon">✓</div>
     <h2 id="confTitle"></h2>
     <div id="confName"></div>
@@ -352,6 +360,20 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
         <div class="err" id="keyErr"></div>
         <div class="m-actions"><button id="btnChangeKey" class="btn btn-accent btn-sm">Cambiar clave</button></div>
       </div>
+      <div class="card-box">
+        <h3>Foto al marcar</h3>
+        <p>Captura una foto con la cámara frontal en cada marca como evidencia de quién registró. Si la cámara no está disponible, la marca se registra sin foto.</p>
+        <label style="display:flex; align-items:center; gap:10px; font-size:16px; margin-bottom:14px;">
+          <input type="checkbox" id="setFotoMarca" style="width:22px; height:22px;"> Tomar foto en cada marca
+        </label>
+        <label class="lbl">Conservar fotos por</label>
+        <select id="setFotoRet" class="field" style="max-width:220px;">
+          <option value="30">30 días</option>
+          <option value="60">60 días</option>
+          <option value="90">90 días</option>
+        </select>
+        <p style="margin-top:12px;">Las fotos más antiguas se borran automáticamente para no llenar el iPad. Las fotos no se incluyen en el respaldo JSON.</p>
+      </div>
       <div class="card-box danger-zone">
         <h3 style="color:#fca5a5;">Zona de riesgo</h3>
         <p>Elimina de forma permanente todo el personal y todos los registros. Descarga un respaldo antes.</p>
@@ -400,6 +422,17 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
       <button id="btnPmCancel" class="btn btn-ghost">Cancelar</button>
       <button id="btnPmSave" class="btn btn-accent">Guardar</button>
     </div>
+  </div>
+</div>
+
+<!-- ===== Visor de foto ===== -->
+<div id="photoModal" class="overlay hidden">
+  <div class="modal" style="text-align:center;">
+    <h2 id="phTitle" style="font-size:18px;"></h2>
+    <p class="sub" id="phSub"></p>
+    <img id="phImg" alt="Foto de la marca">
+    <div class="err hidden" id="phNone" style="padding:30px 0;">La foto ya no está disponible (se eliminó por antigüedad o no se capturó).</div>
+    <div class="m-actions"><button id="phClose" class="btn btn-ghost">Cerrar</button></div>
   </div>
 </div>
 
@@ -455,6 +488,98 @@ function toast(msg, isError) {
   toastTimer = setTimeout(() => { t.className = ""; }, 2800);
 }
 function norm(s) { return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+
+/* ================= Fotos (IndexedDB) ================= */
+const PHOTO_DB = "asistencia_fotos", PHOTO_STORE = "fotos";
+function hasIDB() { return typeof indexedDB !== "undefined"; }
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(PHOTO_DB, 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore(PHOTO_STORE); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function photoPut(id, dataUrl) {
+  if (!hasIDB()) return;
+  try {
+    const db = await idbOpen();
+    await new Promise((res, rej) => {
+      const tx = db.transaction(PHOTO_STORE, "readwrite");
+      tx.objectStore(PHOTO_STORE).put({ d: dataUrl, ts: Date.now() }, id);
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+  } catch (e) { console.error("photoPut", e); }
+}
+async function photoGet(id) {
+  if (!hasIDB()) return null;
+  try {
+    const db = await idbOpen();
+    return await new Promise((res) => {
+      const rq = db.transaction(PHOTO_STORE).objectStore(PHOTO_STORE).get(id);
+      rq.onsuccess = () => res(rq.result ? rq.result.d : null);
+      rq.onerror = () => res(null);
+    });
+  } catch (e) { return null; }
+}
+async function photoDel(id) {
+  if (!hasIDB()) return;
+  try {
+    const db = await idbOpen();
+    db.transaction(PHOTO_STORE, "readwrite").objectStore(PHOTO_STORE).delete(id);
+  } catch (e) { }
+}
+async function photoPurge(days) {
+  if (!hasIDB()) return;
+  try {
+    const lim = Date.now() - days * 86400000;
+    const db = await idbOpen();
+    const rq = db.transaction(PHOTO_STORE, "readwrite").objectStore(PHOTO_STORE).openCursor();
+    rq.onsuccess = () => {
+      const c = rq.result;
+      if (c) { if (c.value && c.value.ts < lim) c.delete(); c.continue(); }
+    };
+  } catch (e) { }
+}
+async function photoClearAll() {
+  if (!hasIDB()) return;
+  try {
+    const db = await idbOpen();
+    db.transaction(PHOTO_STORE, "readwrite").objectStore(PHOTO_STORE).clear();
+  } catch (e) { }
+}
+
+/* ================= C\u00e1mara ================= */
+let camStream = null;
+function fotoEnabled() { return DB.settings.fotoMarca !== false; }
+async function camStart() {
+  if (!fotoEnabled()) { camOff(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { camOff(); return; }
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 480 } }, audio: false
+    });
+    const v = $("camVideo");
+    v.srcObject = camStream;
+    show("camWrap"); show("camNote"); hide("actAvatar");
+  } catch (e) { camOff(); }
+}
+function camOff() { hide("camWrap"); hide("camNote"); show("actAvatar"); }
+function camStop() {
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  const v = $("camVideo"); if (v) v.srcObject = null;
+}
+function camCapture() {
+  const v = $("camVideo");
+  if (!camStream || !v || !v.videoWidth) return null;
+  try {
+    const size = 240, s = Math.min(v.videoWidth, v.videoHeight);
+    const c = document.createElement("canvas");
+    c.width = size; c.height = size;
+    c.getContext("2d").drawImage(v, (v.videoWidth - s) / 2, (v.videoHeight - s) / 2, s, s, 0, 0, size, size);
+    return c.toDataURL("image/jpeg", 0.6);
+  } catch (e) { return null; }
+}
 
 /* ================= Reloj ================= */
 function tickClock() {
@@ -569,12 +694,14 @@ function openAction(person) {
   $("btnSalida").classList.toggle("suggested", suggest === "salida");
   $("actClock").textContent = fmtHora(new Date());
   show("actionView");
+  camStart();
   clearTimeout(actionTimer);
   actionTimer = setTimeout(closeAction, 25000);
 }
 function closeAction() {
   clearTimeout(actionTimer);
   actionPerson = null;
+  camStop();
   hide("actionView");
 }
 $("actCancel").addEventListener("click", closeAction);
@@ -591,12 +718,21 @@ function mark(tipo) {
     return;
   }
   marking = true;
-  DB.records.push({ id: uid("r"), personId: actionPerson.id, nombre: actionPerson.nombre, ts: now, tipo });
+  const fotoData = camCapture();
+  const rec = { id: uid("r"), personId: actionPerson.id, nombre: actionPerson.nombre, ts: now, tipo, foto: !!fotoData };
+  DB.records.push(rec);
   save();
+  if (fotoData) photoPut(rec.id, fotoData);
   const d = new Date(now);
   const isIn = tipo === "entrada";
+  if (fotoData) {
+    $("confPhoto").src = fotoData;
+    show("confPhoto"); hide("confIcon");
+  } else {
+    hide("confPhoto"); show("confIcon");
+  }
   $("confIcon").style.background = isIn ? "#14532d" : "#713f12";
-  $("confIcon").textContent = isIn ? "✓" : "✓";
+  $("confIcon").textContent = "✓";
   $("confTitle").textContent = isIn ? "Entrada registrada" : "Salida registrada";
   $("confTitle").style.color = isIn ? "#86efac" : "#fcd34d";
   $("confName").textContent = actionPerson.nombre;
@@ -655,6 +791,8 @@ function openAdmin() {
   renderRecords();
   renderPeople();
   $("setEmpresa").value = DB.settings.empresa || "";
+  $("setFotoMarca").checked = fotoEnabled();
+  $("setFotoRet").value = String(DB.settings.fotoRet || 60);
 }
 $("btnAdminClose").addEventListener("click", () => { hide("adminView"); renderKiosk(); });
 
@@ -730,6 +868,7 @@ function renderRecords() {
       "<td>" + esc(r.nombre) + "</td>" +
       '<td><span class="tag ' + (r.tipo === "entrada" ? "tag-in" : "tag-out") + '">' + (r.tipo === "entrada" ? "Entrada" : "Salida") + "</span></td>" +
       '<td style="text-align:right; white-space:nowrap;">' +
+      (r.foto ? '<button class="btn btn-sm btn-ghost" data-act="photo" data-id="' + r.id + '">📷</button> ' : "") +
       '<button class="btn btn-sm btn-ghost" data-act="edit" data-id="' + r.id + '">✎</button> ' +
       '<button class="btn btn-sm btn-ghost" data-act="del" data-id="' + r.id + '" style="color:#fca5a5;">🗑</button></td></tr>';
   }).join("") || '<tr><td colspan="5" class="muted" style="padding:30px; text-align:center;">Sin registros en este periodo</td></tr>';
@@ -742,13 +881,29 @@ $("recordsTbody").addEventListener("click", (e) => {
   if (b.dataset.act === "del") {
     if (confirm("¿Eliminar el registro de " + rec.nombre + " (" + fmtFecha(new Date(rec.ts)) + " " + fmtHora(new Date(rec.ts)) + ")?")) {
       DB.records = DB.records.filter(r => r.id !== rec.id);
+      photoDel(rec.id);
       save(); renderRecords();
       toast("Registro eliminado");
     }
   } else if (b.dataset.act === "edit") {
     openRecordModal(rec);
+  } else if (b.dataset.act === "photo") {
+    openPhotoModal(rec);
   }
 });
+
+/* ---------- Visor de foto ---------- */
+async function openPhotoModal(rec) {
+  const d = new Date(rec.ts);
+  $("phTitle").textContent = rec.nombre;
+  $("phSub").textContent = (rec.tipo === "entrada" ? "Entrada" : "Salida") + " · " + fmtFecha(d) + " · " + fmtHora(d);
+  hide("phImg"); hide("phNone");
+  show("photoModal");
+  const data = await photoGet(rec.id);
+  if (data) { $("phImg").src = data; show("phImg"); }
+  else show("phNone");
+}
+$("phClose").addEventListener("click", () => hide("photoModal"));
 
 /* ---------- Modal registro ---------- */
 let editingRecord = null; // null => agregar
@@ -1010,11 +1165,23 @@ $("btnChangeKey").addEventListener("click", () => {
   $("curKey").value = $("newKey").value = $("newKey2").value = "";
   toast("Clave maestra actualizada");
 });
+$("setFotoMarca").addEventListener("change", () => {
+  DB.settings.fotoMarca = $("setFotoMarca").checked;
+  save();
+  toast(DB.settings.fotoMarca ? "Foto al marcar activada" : "Foto al marcar desactivada");
+});
+$("setFotoRet").addEventListener("change", () => {
+  DB.settings.fotoRet = parseInt($("setFotoRet").value, 10) || 60;
+  save();
+  photoPurge(DB.settings.fotoRet);
+  toast("Retención de fotos: " + DB.settings.fotoRet + " días");
+});
 $("btnWipe").addEventListener("click", () => {
   const conf = prompt("Esta acción borra TODO el personal y TODOS los registros de forma permanente.\n\nEscribe BORRAR para confirmar:");
   if (conf !== "BORRAR") { toast("Operación cancelada"); return; }
   const key = DB.settings.adminKey, emp = DB.settings.empresa;
-  DB = { settings: { adminKey: key, empresa: emp, lastBackup: null }, people: [], records: [] };
+  DB = { settings: { adminKey: key, empresa: emp, lastBackup: null, fotoMarca: DB.settings.fotoMarca, fotoRet: DB.settings.fotoRet }, people: [], records: [] };
+  photoClearAll();
   save();
   openAdmin();
   renderKiosk();
@@ -1024,6 +1191,9 @@ $("btnWipe").addEventListener("click", () => {
 /* ================= Inicio ================= */
 buildPad();
 load();
+if (DB.settings.fotoMarca === undefined) DB.settings.fotoMarca = true;
+if (!DB.settings.fotoRet) DB.settings.fotoRet = 60;
+photoPurge(DB.settings.fotoRet);
 tickClock();
 if (!DB.settings.adminKey) {
   show("setupView");
