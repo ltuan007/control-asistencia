@@ -198,6 +198,7 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
     <input id="searchBox" type="search" placeholder="Busca tu nombre…" autocomplete="off">
   </div>
   <div id="personGrid"></div>
+  <div style="text-align:center; padding:4px 0 2px;"><button id="btnAviso" class="btn btn-ghost btn-sm" style="color:var(--muted); font-size:13px;">Aviso de privacidad</button></div>
 </div>
 
 <!-- ===== PIN ===== -->
@@ -374,6 +375,22 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
         </select>
         <p style="margin-top:12px;">Las fotos más antiguas se borran automáticamente para no llenar el iPad. Las fotos no se incluyen en el respaldo JSON.</p>
       </div>
+      <div class="card-box">
+        <h3>Ubicación al marcar (GPS)</h3>
+        <p>Guarda la ubicación (latitud y longitud) en cada marca. La ubicación sí se incluye en el respaldo y en el CSV de marcas. Si el GPS falla o se niega el permiso, la marca se registra igual, sin ubicación. En un iPad fijo la ubicación será casi siempre la misma.</p>
+        <label style="display:flex; align-items:center; gap:10px; font-size:16px;">
+          <input type="checkbox" id="setGeoMarca" style="width:22px; height:22px;"> Registrar ubicación en cada marca
+        </label>
+      </div>
+      <div class="card-box">
+        <h3>Aviso de privacidad</h3>
+        <p>Estos datos aparecen en el aviso que ve el personal en el kiosko. Complétalos con la información real de tu empresa.</p>
+        <label class="lbl">Correo de contacto (derechos ARCO)</label>
+        <input id="setAvisoContacto" class="field" placeholder="Ej. privacidad@tuempresa.com" autocomplete="off">
+        <label class="lbl">Domicilio del responsable</label>
+        <input id="setAvisoDomicilio" class="field" placeholder="Ej. calle, número, ciudad, estado" autocomplete="off">
+        <div class="m-actions"><button id="btnSaveAviso" class="btn btn-accent btn-sm">Guardar</button></div>
+      </div>
       <div class="card-box danger-zone">
         <h3 style="color:#fca5a5;">Zona de riesgo</h3>
         <p>Elimina de forma permanente todo el personal y todos los registros. Descarga un respaldo antes.</p>
@@ -433,6 +450,14 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
     <img id="phImg" alt="Foto de la marca">
     <div class="err hidden" id="phNone" style="padding:30px 0;">La foto ya no está disponible (se eliminó por antigüedad o no se capturó).</div>
     <div class="m-actions"><button id="phClose" class="btn btn-ghost">Cerrar</button></div>
+  </div>
+</div>
+
+<div id="avisoModal" class="overlay hidden">
+  <div class="modal" style="width:min(640px,100%);">
+    <h2>Aviso de Privacidad</h2>
+    <div id="avisoBody" style="text-align:left; font-size:14.5px; line-height:1.6; max-height:68vh; overflow-y:auto;"></div>
+    <div class="m-actions"><button id="avisoClose" class="btn btn-accent">Cerrar</button></div>
   </div>
 </div>
 
@@ -581,6 +606,39 @@ function camCapture() {
   } catch (e) { return null; }
 }
 
+/* ================= Geolocalización ================= */
+let geoLast = null, geoWatchId = null;
+function geoEnabled() { return DB.settings.geoMarca === true; }
+function geoStart() {
+  geoLast = null;
+  if (!geoEnabled()) return;
+  if (!navigator.geolocation) return;
+  try {
+    geoWatchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        geoLast = {
+          lat: +pos.coords.latitude.toFixed(6),
+          lng: +pos.coords.longitude.toFixed(6),
+          acc: Math.round(pos.coords.accuracy || 0),
+          ts: Date.now()
+        };
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+    );
+  } catch (e) {}
+}
+function geoStop() {
+  if (geoWatchId !== null && navigator.geolocation) {
+    try { navigator.geolocation.clearWatch(geoWatchId); } catch (e) {}
+  }
+  geoWatchId = null;
+}
+function geoCurrent() {
+  if (geoLast && (Date.now() - geoLast.ts) <= 120000) return geoLast;
+  return null;
+}
+
 /* ================= Reloj ================= */
 function tickClock() {
   const d = new Date();
@@ -695,6 +753,7 @@ function openAction(person) {
   $("actClock").textContent = fmtHora(new Date());
   show("actionView");
   camStart();
+  geoStart();
   clearTimeout(actionTimer);
   actionTimer = setTimeout(closeAction, 25000);
 }
@@ -702,6 +761,7 @@ function closeAction() {
   clearTimeout(actionTimer);
   actionPerson = null;
   camStop();
+  geoStop();
   hide("actionView");
 }
 $("actCancel").addEventListener("click", closeAction);
@@ -719,7 +779,8 @@ function mark(tipo) {
   }
   marking = true;
   const fotoData = camCapture();
-  const rec = { id: uid("r"), personId: actionPerson.id, nombre: actionPerson.nombre, ts: now, tipo, foto: !!fotoData };
+  const geo = geoCurrent();
+  const rec = { id: uid("r"), personId: actionPerson.id, nombre: actionPerson.nombre, ts: now, tipo, foto: !!fotoData, geo: geo };
   DB.records.push(rec);
   save();
   if (fotoData) photoPut(rec.id, fotoData);
@@ -736,7 +797,7 @@ function mark(tipo) {
   $("confTitle").textContent = isIn ? "Entrada registrada" : "Salida registrada";
   $("confTitle").style.color = isIn ? "#86efac" : "#fcd34d";
   $("confName").textContent = actionPerson.nombre;
-  $("confTime").textContent = fmtFecha(d) + " · " + fmtHora(d);
+  $("confTime").textContent = fmtFecha(d) + " · " + fmtHora(d) + (geo ? " · 📍 ubicación registrada" : (geoEnabled() ? " · 📍 sin ubicación" : ""));
   closeAction();
   show("confirmOverlay");
   setTimeout(() => {
@@ -793,6 +854,9 @@ function openAdmin() {
   $("setEmpresa").value = DB.settings.empresa || "";
   $("setFotoMarca").checked = fotoEnabled();
   $("setFotoRet").value = String(DB.settings.fotoRet || 60);
+  $("setGeoMarca").checked = geoEnabled();
+  $("setAvisoContacto").value = DB.settings.avisoContacto || "";
+  $("setAvisoDomicilio").value = DB.settings.avisoDomicilio || "";
 }
 $("btnAdminClose").addEventListener("click", () => { hide("adminView"); renderKiosk(); });
 
@@ -869,6 +933,7 @@ function renderRecords() {
       '<td><span class="tag ' + (r.tipo === "entrada" ? "tag-in" : "tag-out") + '">' + (r.tipo === "entrada" ? "Entrada" : "Salida") + "</span></td>" +
       '<td style="text-align:right; white-space:nowrap;">' +
       (r.foto ? '<button class="btn btn-sm btn-ghost" data-act="photo" data-id="' + r.id + '">📷</button> ' : "") +
+      (r.geo ? '<button class="btn btn-sm btn-ghost" data-act="geo" data-id="' + r.id + '">📍</button> ' : "") +
       '<button class="btn btn-sm btn-ghost" data-act="edit" data-id="' + r.id + '">✎</button> ' +
       '<button class="btn btn-sm btn-ghost" data-act="del" data-id="' + r.id + '" style="color:#fca5a5;">🗑</button></td></tr>';
   }).join("") || '<tr><td colspan="5" class="muted" style="padding:30px; text-align:center;">Sin registros en este periodo</td></tr>';
@@ -889,6 +954,8 @@ $("recordsTbody").addEventListener("click", (e) => {
     openRecordModal(rec);
   } else if (b.dataset.act === "photo") {
     openPhotoModal(rec);
+  } else if (b.dataset.act === "geo") {
+    openGeoMap(rec);
   }
 });
 
@@ -904,6 +971,14 @@ async function openPhotoModal(rec) {
   else show("phNone");
 }
 $("phClose").addEventListener("click", () => hide("photoModal"));
+
+function openGeoMap(rec) {
+  if (!rec.geo) { toast("Esta marca no tiene ubicación", true); return; }
+  const { lat, lng, acc } = rec.geo;
+  const url = "https://www.google.com/maps?q=" + lat + "," + lng;
+  toast("Abriendo mapa… precisión ±" + acc + " m");
+  window.open(url, "_blank");
+}
 
 /* ---------- Modal registro ---------- */
 let editingRecord = null; // null => agregar
@@ -1069,10 +1144,15 @@ $("btnCsvMarcas").addEventListener("click", () => {
   const [a, b] = exportRange();
   const list = DB.records.filter(r => r.ts >= a && r.ts <= b).sort((x, y) => x.ts - y.ts);
   if (!list.length) { toast("No hay registros en ese periodo", true); return; }
-  const rows = [["Fecha", "Hora", "Nombre", "Tipo"]];
+  const rows = [["Fecha", "Hora", "Nombre", "Tipo", "Latitud", "Longitud", "Precisión (m)", "Mapa"]];
   list.forEach(r => {
     const d = new Date(r.ts);
-    rows.push([fmtFecha(d), fmtHora(d), r.nombre, r.tipo === "entrada" ? "Entrada" : "Salida"]);
+    const g = r.geo;
+    rows.push([
+      fmtFecha(d), fmtHora(d), r.nombre, r.tipo === "entrada" ? "Entrada" : "Salida",
+      g ? g.lat : "", g ? g.lng : "", g ? g.acc : "",
+      g ? ("https://www.google.com/maps?q=" + g.lat + "," + g.lng) : ""
+    ]);
   });
   download("asistencia_marcas_" + stampName() + ".csv", csvBuild(rows));
   toast("CSV de marcas descargado");
@@ -1176,11 +1256,39 @@ $("setFotoRet").addEventListener("change", () => {
   photoPurge(DB.settings.fotoRet);
   toast("Retención de fotos: " + DB.settings.fotoRet + " días");
 });
+$("setGeoMarca").addEventListener("change", () => {
+  DB.settings.geoMarca = $("setGeoMarca").checked;
+  save();
+  toast(DB.settings.geoMarca ? "Ubicación al marcar activada" : "Ubicación al marcar desactivada");
+});
+function avisoTextoHTML() {
+  const emp = esc(DB.settings.empresa || "[Nombre de la empresa]");
+  const contacto = esc(DB.settings.avisoContacto || "[correo de contacto]");
+  const dom = esc(DB.settings.avisoDomicilio || "[domicilio del responsable]");
+  const hoy = fmtFecha(new Date());
+  return "<p><b>" + emp + "</b> (en adelante, el Responsable), con domicilio en " + dom + ", es responsable del tratamiento de sus datos personales conforme a la Ley Federal de Protección de Datos Personales en Posesión de los Particulares (LFPDPPP).</p>"
+    + "<p><b>Datos que se recaban.</b> Al usar este sistema de control de asistencia se recaban: nombre, número de identificación personal (PIN), fecha y hora de cada entrada y salida, una fotografía del rostro tomada al momento de marcar (cuando esa función está activa) y la ubicación geográfica del dispositivo al momento de marcar (cuando esa función está activa).</p>"
+    + "<p><b>Finalidades.</b> Los datos se utilizan para: (1) registrar y controlar la asistencia y la puntualidad; (2) calcular las horas trabajadas; (3) verificar la identidad de quien marca y contar con evidencia para auditoría; y (4) cumplir las obligaciones laborales, administrativas y fiscales relacionadas.</p>"
+    + "<p><b>Almacenamiento y transferencias.</b> Los datos se guardan de forma local en el dispositivo del Responsable y no se transfieren a terceros, salvo obligación legal o requerimiento de autoridad competente. Las fotografías se conservan por un periodo limitado y después se eliminan automáticamente.</p>"
+    + "<p><b>Derechos ARCO.</b> Usted puede ejercer sus derechos de Acceso, Rectificación, Cancelación y Oposición, así como revocar su consentimiento o limitar el uso de sus datos, enviando su solicitud al correo: " + contacto + ".</p>"
+    + "<p><b>Cambios al aviso.</b> Este aviso puede actualizarse; cualquier cambio se comunicará por este mismo medio.</p>"
+    + "<p style=\"color:var(--muted); font-size:13px;\">Última actualización: " + hoy + ".</p>"
+    + "<p style=\"color:var(--muted); font-size:12px;\">Texto base de carácter informativo; conviene que sea revisado por un asesor legal.</p>";
+}
+function openAviso() { $("avisoBody").innerHTML = avisoTextoHTML(); show("avisoModal"); }
+$("btnAviso").addEventListener("click", openAviso);
+$("avisoClose").addEventListener("click", () => hide("avisoModal"));
+$("btnSaveAviso").addEventListener("click", () => {
+  DB.settings.avisoContacto = $("setAvisoContacto").value.trim();
+  DB.settings.avisoDomicilio = $("setAvisoDomicilio").value.trim();
+  save();
+  toast("Aviso de privacidad actualizado");
+});
 $("btnWipe").addEventListener("click", () => {
   const conf = prompt("Esta acción borra TODO el personal y TODOS los registros de forma permanente.\n\nEscribe BORRAR para confirmar:");
   if (conf !== "BORRAR") { toast("Operación cancelada"); return; }
   const key = DB.settings.adminKey, emp = DB.settings.empresa;
-  DB = { settings: { adminKey: key, empresa: emp, lastBackup: null, fotoMarca: DB.settings.fotoMarca, fotoRet: DB.settings.fotoRet }, people: [], records: [] };
+  DB = { settings: { adminKey: key, empresa: emp, lastBackup: null, fotoMarca: DB.settings.fotoMarca, fotoRet: DB.settings.fotoRet, geoMarca: DB.settings.geoMarca }, people: [], records: [] };
   photoClearAll();
   save();
   openAdmin();
@@ -1192,6 +1300,7 @@ $("btnWipe").addEventListener("click", () => {
 buildPad();
 load();
 if (DB.settings.fotoMarca === undefined) DB.settings.fotoMarca = true;
+if (DB.settings.geoMarca === undefined) DB.settings.geoMarca = true;
 if (!DB.settings.fotoRet) DB.settings.fotoRet = 60;
 photoPurge(DB.settings.fotoRet);
 tickClock();
