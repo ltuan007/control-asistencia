@@ -260,6 +260,7 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
   <div class="a-header">
     <h1>Administración</h1>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <span class="a-pill" id="colaPill"></span>
       <span class="a-pill" id="backupPill"></span>
       <button id="btnAdminClose" class="btn btn-sm">✕ Cerrar</button>
     </div>
@@ -307,8 +308,8 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
       </table>
       <details class="bulk">
         <summary>Alta masiva de personal</summary>
-        <p class="muted" style="font-size:14px; margin:12px 0 8px;">Pega una línea por persona con el formato: <b>Nombre, PIN</b> (PIN de 4 a 6 dígitos).</p>
-        <textarea id="bulkText" class="field" rows="6" placeholder="Juan Pérez, 1234&#10;María López, 5678"></textarea>
+        <p class="muted" style="font-size:14px; margin:12px 0 8px;">Una línea por persona: <b>Nombre, PIN, Modalidad, Área</b> (Modalidad: NO/HI/HO · Área: OPS/COR). Si omites las últimas, usa NO y OPS.</p>
+        <textarea id="bulkText" class="field" rows="6" placeholder="Angélica Garrido, 4293, HI, COR&#10;Daniel Manzano, 4653, NO, COR"></textarea>
         <div class="m-actions"><button id="btnBulk" class="btn btn-accent btn-sm">Importar</button></div>
         <div id="bulkResult" class="muted" style="font-size:14px; margin-top:10px; white-space:pre-line;"></div>
       </details>
@@ -348,6 +349,12 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
     </div>
 
     <div id="tab-ajustes" class="a-section hidden">
+      <div class="card-box">
+        <h3>Ubicación de este iPad</h3>
+        <p>Cada marca registrada en este iPad se sella con esta sede. Configúrala una sola vez.</p>
+        <select id="setUbicacion" class="field" style="max-width:240px;"></select>
+        <div class="m-actions"><button id="btnSaveUbic" class="btn btn-accent btn-sm">Guardar ubicación</button></div>
+      </div>
       <div class="card-box">
         <h3>Empresa</h3>
         <input id="setEmpresa" class="field" placeholder="Nombre que se muestra en el kiosko" autocomplete="off">
@@ -429,6 +436,10 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
     <input id="pmNombre" class="field" autocomplete="off" placeholder="Ej. Ana Martínez">
     <label class="lbl">PIN (4 a 6 dígitos)</label>
     <input id="pmPin" class="field" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="Ej. 2580">
+    <label class="lbl">Área</label>
+    <select id="pmArea" class="field"><option value="OPS">OPS · Operaciones (48 h/sem)</option><option value="COR">COR · Corporativo (40 h/sem)</option></select>
+    <label class="lbl">Modalidad</label>
+    <select id="pmMod" class="field"><option value="NO">NO · Normal</option><option value="HI">HI · Híbrido</option><option value="HO">HO · Home Office</option></select>
     <div id="pmActivoWrap" class="hidden" style="margin-top:14px;">
       <label style="display:flex; align-items:center; gap:10px; font-size:16px;">
         <input type="checkbox" id="pmActivo" style="width:22px; height:22px;"> Activo (visible en el kiosko)
@@ -465,24 +476,77 @@ details.bulk summary{cursor:pointer; font-weight:600; font-size:15.5px;}
 
 <script>
 "use strict";
+/* ================= CONFIG CENTRAL (llena estas 2 líneas) ================= */
+const API_URL = "https://script.google.com/a/macros/grupoindie.rocks/s/AKfycbwvywGA0hb0_ov12VEsBq2k1Q-ztgs4dbqFPaziBeutTEkdgPoPE3dsidYFWgWW0kR92g/exec";
+const API_SECRET = "0409";  // mismo SECRET del backend (Code.gs)
+const UBICACIONES = ["FIR!", "HOV", "ORBE"];
+
 /* ================= Estado ================= */
-const LS_KEY = "asistencia_data_v1";
-let DB = { settings: { adminKey: null, empresa: "", lastBackup: null }, people: [], records: [] };
+const LS_KEY = "asistencia_data_v4";
+// DB local = caché de empleados (del central) + ajustes del iPad + registros locales (sugerir/antiduplicado) + cola offline
+let DB = { settings: { adminKey: null, empresa: "", ubicacion: "", fotoMarca: true, geoMarca: true, fotoRet: 60 }, people: [], records: [], cola: [] };
 
 function load() {
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      if (d && d.settings) DB = d;
-    }
+    if (raw) { const d = JSON.parse(raw); if (d && d.settings) DB = d; }
   } catch (e) { console.error("load", e); }
+  if (!DB.cola) DB.cola = [];
+  if (!DB.records) DB.records = [];
+  if (!DB.people) DB.people = [];
 }
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); }
   catch (e) { toast("Error al guardar datos: " + e.message, true); }
 }
 function uid(p) { return p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function deviceId() {
+  if (!DB.settings.deviceId) { DB.settings.deviceId = uid("dev"); save(); }
+  return DB.settings.deviceId;
+}
+
+/* ================= API central (Apps Script) ================= */
+function apiGet(params) {
+  const qs = Object.keys(params).map(k => encodeURIComponent(k) + "=" + encodeURIComponent(params[k])).join("&");
+  return fetch(API_URL + "?" + qs).then(r => r.json());
+}
+function apiPost(payload) {
+  // text/plain evita el preflight CORS que Apps Script no responde
+  return fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(Object.assign({ secret: API_SECRET }, payload))
+  }).then(r => r.json());
+}
+async function cargarEmpleados() {
+  try {
+    const r = await apiGet({ action: "empleados", secret: API_SECRET });
+    if (r && r.ok && Array.isArray(r.empleados)) {
+      DB.people = r.empleados.map(e => ({ id: e.id, nombre: e.nombre, pin: String(e.pin),
+        area: e.area, modalidad: e.modalidad, activo: e.activo !== false }));
+      DB.settings.empSync = Date.now();
+      save();
+      return true;
+    }
+  } catch (e) { console.error("cargarEmpleados", e); }
+  return false; // sin red: se queda con la caché local
+}
+/* ---- cola offline de marcas ---- */
+function encolar(payload) { DB.cola.push(payload); save(); actualizarColaPill(); }
+async function flushCola() {
+  if (!DB.cola.length) return;
+  const lote = DB.cola.slice();
+  try {
+    const r = await apiPost({ action: "marcas_bulk", marcas: lote });
+    if (r && r.ok) { DB.cola.splice(0, lote.length); save(); }
+  } catch (e) { /* sigue offline; reintenta luego */ }
+  actualizarColaPill();
+}
+function actualizarColaPill() {
+  const el = $("colaPill"); if (!el) return;
+  el.textContent = DB.cola.length ? ("⚠ " + DB.cola.length + " marca(s) sin enviar") : "✓ Sincronizado";
+  el.className = "a-pill" + (DB.cola.length ? " warn" : "");
+}
 
 /* ================= Utilidades ================= */
 const $ = (id) => document.getElementById(id);
@@ -654,7 +718,7 @@ function activePeople() {
   return DB.people.filter(p => p.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
 }
 function renderKiosk() {
-  $("empresaLabel").textContent = DB.settings.empresa || "Registro de asistencia";
+  $("empresaLabel").textContent = (DB.settings.empresa || "Registro de asistencia") + (DB.settings.ubicacion ? " · " + DB.settings.ubicacion : " · ⚠ define sede");
   const q = norm($("searchBox").value || "");
   const list = activePeople().filter(p => !q || norm(p.nombre).includes(q));
   const grid = $("personGrid");
@@ -777,6 +841,10 @@ function mark(tipo) {
     toast("Ya registraste una marca hace menos de un minuto", true);
     return;
   }
+  if (!DB.settings.ubicacion) {
+    toast("Configura la ubicación de este iPad en ⚙︎ Admin → Ajustes", true);
+    return;
+  }
   marking = true;
   const fotoData = camCapture();
   const geo = geoCurrent();
@@ -784,6 +852,12 @@ function mark(tipo) {
   DB.records.push(rec);
   save();
   if (fotoData) photoPut(rec.id, fotoData);
+  // enviar al repositorio central (o encolar si no hay red)
+  const payload = { tsISO: new Date(now).toISOString(), empleadoId: actionPerson.id, nombre: actionPerson.nombre,
+    tipo: tipo, ubicacion: DB.settings.ubicacion, lat: geo ? geo.lat : "", lng: geo ? geo.lng : "", acc: geo ? geo.acc : "", device: deviceId() };
+  apiPost({ action: "marca", marca: payload })
+    .then(r => { if (!(r && r.ok)) encolar(payload); else actualizarColaPill(); })
+    .catch(() => encolar(payload));
   const d = new Date(now);
   const isIn = tipo === "entrada";
   if (fotoData) {
@@ -797,7 +871,7 @@ function mark(tipo) {
   $("confTitle").textContent = isIn ? "Entrada registrada" : "Salida registrada";
   $("confTitle").style.color = isIn ? "#86efac" : "#fcd34d";
   $("confName").textContent = actionPerson.nombre;
-  $("confTime").textContent = fmtFecha(d) + " · " + fmtHora(d) + (geo ? " · 📍 ubicación registrada" : (geoEnabled() ? " · 📍 sin ubicación" : ""));
+  $("confTime").textContent = fmtFecha(d) + " · " + fmtHora(d) + " · " + DB.settings.ubicacion + (geo ? " · 📍" : "");
   closeAction();
   show("confirmOverlay");
   setTimeout(() => {
@@ -821,7 +895,8 @@ $("btnSetup").addEventListener("click", () => {
   hide("setupView");
   show("kioskView");
   renderKiosk();
-  toast("Listo. Da de alta a tu equipo en ⚙︎ Admin → Personal");
+  cargarEmpleados().then(() => renderKiosk());
+  toast("Listo. Configura la ubicación del iPad en ⚙︎ Admin → Ajustes");
 });
 
 /* ================= Login admin ================= */
@@ -857,6 +932,9 @@ function openAdmin() {
   $("setGeoMarca").checked = geoEnabled();
   $("setAvisoContacto").value = DB.settings.avisoContacto || "";
   $("setAvisoDomicilio").value = DB.settings.avisoDomicilio || "";
+  $("setUbicacion").innerHTML = '<option value="">— elige —</option>' + UBICACIONES.map(u => '<option value="' + u + '">' + u + '</option>').join("");
+  $("setUbicacion").value = DB.settings.ubicacion || "";
+  actualizarColaPill();
 }
 $("btnAdminClose").addEventListener("click", () => { hide("adminView"); renderKiosk(); });
 
@@ -1055,13 +1133,14 @@ $("peopleTbody").addEventListener("click", (e) => {
   if (!p) return;
   if (b.dataset.act === "edit") openPersonModal(p);
   else if (b.dataset.act === "toggle") {
-    p.activo = p.activo === false;
-    save(); renderPeople(); renderKiosk();
+    apiPost({ action: "empleado_upsert", empleado: { id: p.id, nombre: p.nombre, pin: p.pin, area: p.area, modalidad: p.modalidad, activo: p.activo === false } })
+      .then(async r => { if (r && r.ok) { await cargarEmpleados(); renderPeople(); renderKiosk(); toast("Estado actualizado"); } else toast("No se pudo (central)", true); })
+      .catch(() => toast("Sin conexión con el central", true));
   } else if (b.dataset.act === "del") {
-    if (confirm("¿Eliminar a " + p.nombre + "? Sus registros históricos se conservan con su nombre.")) {
-      DB.people = DB.people.filter(x => x.id !== p.id);
-      save(); renderPeople(); renderPersonFilter(); renderKiosk();
-      toast("Persona eliminada");
+    if (confirm("¿Dar de baja a " + p.nombre + "? Dejará de aparecer en los kioscos; su historial se conserva.")) {
+      apiPost({ action: "empleado_baja", id: p.id })
+        .then(async r => { if (r && r.ok) { await cargarEmpleados(); renderPeople(); renderPersonFilter(); renderKiosk(); toast("Empleado dado de baja"); } else toast("No se pudo (central)", true); })
+        .catch(() => toast("Sin conexión con el central", true));
     }
   }
 });
@@ -1075,48 +1154,55 @@ function openPersonModal(p) {
   $("pmPin").value = p ? p.pin : "";
   $("pmActivoWrap").classList.toggle("hidden", !p);
   if (p) $("pmActivo").checked = p.activo !== false;
+  $("pmArea").value = (p && p.area) ? p.area : "OPS";
+  $("pmMod").value = (p && p.modalidad) ? p.modalidad : "NO";
   show("personModal");
 }
 $("btnAddPerson").addEventListener("click", () => openPersonModal(null));
 $("btnPmCancel").addEventListener("click", () => hide("personModal"));
-$("btnPmSave").addEventListener("click", () => {
+$("btnPmSave").addEventListener("click", async () => {
   const nombre = $("pmNombre").value.trim();
   const pin = $("pmPin").value.trim();
+  const area = $("pmArea").value;
+  const modalidad = $("pmMod").value;
   if (!nombre) { $("pmError").textContent = "Escribe el nombre"; return; }
   if (!/^\d{4,6}$/.test(pin)) { $("pmError").textContent = "El PIN debe ser de 4 a 6 dígitos"; return; }
-  if (editingPerson) {
-    editingPerson.nombre = nombre;
-    editingPerson.pin = pin;
-    editingPerson.activo = $("pmActivo").checked;
-    DB.records.forEach(r => { if (r.personId === editingPerson.id) r.nombre = nombre; });
-  } else {
-    DB.people.push({ id: uid("p"), nombre, pin, activo: true });
-  }
-  save();
+  const emp = { id: editingPerson ? editingPerson.id : "", nombre, pin, area, modalidad,
+    activo: editingPerson ? $("pmActivo").checked : true };
+  $("pmError").textContent = "Guardando en el central…";
+  try {
+    const r = await apiPost({ action: "empleado_upsert", empleado: emp });
+    if (!(r && r.ok)) { $("pmError").textContent = "No se pudo guardar en el central (revisa la conexión)"; return; }
+  } catch (e) { $("pmError").textContent = "Sin conexión con el central"; return; }
+  await cargarEmpleados();
   hide("personModal");
   renderPeople(); renderPersonFilter(); renderKiosk();
-  toast(editingPerson ? "Cambios guardados" : "Persona agregada");
+  toast(editingPerson ? "Cambios guardados (central)" : "Persona agregada (central)");
   editingPerson = null;
 });
 
 /* ---------- Alta masiva ---------- */
-$("btnBulk").addEventListener("click", () => {
+$("btnBulk").addEventListener("click", async () => {
   const lines = $("bulkText").value.split("\n").map(l => l.trim()).filter(Boolean);
   if (!lines.length) { $("bulkResult").textContent = "Pega al menos una línea."; return; }
   let ok = 0; const errs = [];
-  lines.forEach((line, i) => {
-    const idx = line.lastIndexOf(",");
-    if (idx < 0) { errs.push("Línea " + (i + 1) + ": falta la coma"); return; }
-    const nombre = line.slice(0, idx).trim();
-    const pin = line.slice(idx + 1).trim();
-    if (!nombre) { errs.push("Línea " + (i + 1) + ": sin nombre"); return; }
-    if (!/^\d{4,6}$/.test(pin)) { errs.push("Línea " + (i + 1) + ": PIN inválido (4-6 dígitos)"); return; }
-    DB.people.push({ id: uid("p"), nombre, pin, activo: true });
-    ok++;
-  });
-  save();
+  $("bulkResult").textContent = "Enviando al central… (no cierres esta ventana)";
+  for (let i = 0; i < lines.length; i++) {
+    const parts = lines[i].split(",").map(s => s.trim());
+    const nombre = parts[0] || "";
+    const pin = (parts[1] || "").replace(/\D/g, "");
+    const modalidad = (parts[2] || "NO").toUpperCase();
+    const area = (parts[3] || "OPS").toUpperCase();
+    if (!nombre) { errs.push("Línea " + (i + 1) + ": sin nombre"); continue; }
+    if (!/^\d{4,6}$/.test(pin)) { errs.push("Línea " + (i + 1) + ": PIN inválido"); continue; }
+    try {
+      const r = await apiPost({ action: "empleado_upsert", empleado: { nombre, pin, modalidad, area, activo: true } });
+      if (r && r.ok) ok++; else errs.push("Línea " + (i + 1) + ": rechazada por el central");
+    } catch (e) { errs.push("Línea " + (i + 1) + ": sin conexión (se detuvo)"); break; }
+  }
+  await cargarEmpleados();
   renderPeople(); renderPersonFilter(); renderKiosk();
-  $("bulkResult").textContent = ok + " persona(s) importada(s)." + (errs.length ? "\n" + errs.join("\n") : "");
+  $("bulkResult").textContent = ok + " persona(s) enviada(s) al central." + (errs.length ? "\n" + errs.join("\n") : "");
   if (ok) $("bulkText").value = "";
 });
 
@@ -1229,6 +1315,11 @@ $("fileRestore").addEventListener("change", (e) => {
 });
 
 /* ---------- Ajustes ---------- */
+$("btnSaveUbic").addEventListener("click", () => {
+  DB.settings.ubicacion = $("setUbicacion").value;
+  save(); renderKiosk();
+  toast(DB.settings.ubicacion ? ("Ubicación de este iPad: " + DB.settings.ubicacion) : "Ubicación sin definir");
+});
 $("btnSaveEmpresa").addEventListener("click", () => {
   DB.settings.empresa = $("setEmpresa").value.trim();
   save(); renderKiosk();
@@ -1310,6 +1401,11 @@ if (!DB.settings.adminKey) {
   show("kioskView");
   renderKiosk();
 }
+// ===== Central: cargar empleados, vaciar cola offline, refrescar =====
+cargarEmpleados().then(() => renderKiosk());
+flushCola();
+setInterval(flushCola, 30000);          // reintenta enviar marcas en cola cada 30 s
+setInterval(cargarEmpleados, 300000);   // refresca lista de empleados cada 5 min
 
 </script>
 </body>
