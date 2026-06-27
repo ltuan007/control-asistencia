@@ -235,7 +235,7 @@ let selected=new Set();
 let personFilter="",sortField="totH",sortDir="desc";
 const charts={};
 Chart.defaults.font.family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif";Chart.defaults.font.size=12;
-const ALL_SET=new Set(ALL_DATES);
+let ALL_SET=new Set(ALL_DATES);
 const ym=d=>d.slice(0,7);
 let MONTHS=[];
 let viewMonth="";
@@ -454,6 +454,7 @@ async function cargarYRender(){
     EMP_INFO = {};
     (er.empleados||[]).forEach(function(e){ EMP_INFO[normName(e.nombre)]={nombre:e.nombre,pin:String(e.pin),mod:e.modalidad,area:e.area}; });
     ALL_DATES=[...new Set(MARKS.map(m=>m.d))].sort();
+    ALL_SET=new Set(ALL_DATES);
     MONTHS=[...new Set(ALL_DATES.map(ym))].sort();
     viewMonth=MONTHS.length?MONTHS[MONTHS.length-1]:"";
     selected=new Set(ALL_DATES.filter(d=>!EXCL.has(d)));
