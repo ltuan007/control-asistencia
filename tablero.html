@@ -58,6 +58,7 @@ thead th:hover{color:var(--text);}
 tbody td{padding:8px 10px;border-bottom:1px solid #f1f3f7;text-align:right;white-space:nowrap;}
 tbody tr:hover{background:#f7f9fc;}
 .flagcell{color:var(--amber);font-weight:700;} .badok{color:var(--green);font-weight:700;} .badno{color:var(--amber);font-weight:700;}
+.badinc{display:inline-block;background:#3b5b8a;color:#fff;border-radius:6px;padding:1px 8px;font-size:11px;font-weight:700;white-space:nowrap;}
 .note{background:#fff8ec;border:1px solid #f3d9a6;border-radius:var(--radius);padding:13px 18px;font-size:13px;color:#7a5b15;margin-bottom:var(--gap);}
 .note b{color:#5e4610;}
 .secttl{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:6px 2px 2px;}
@@ -113,6 +114,21 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px;}
     <div class="grp"><span>Ubicación (sede)</span><select id="ubicSel"><option value="">Todas</option><option value="FIR!">FIR!</option><option value="HOV">HOV</option><option value="ORBE">ORBE</option></select></div>
     <div class="grp"><span>Esperado según</span><select id="baseSel"><option value="periodo" selected>Días del periodo</option><option value="asistidos">Días asistidos</option></select></div>
   </div>
+  <details class="panel" id="rrhhPanel" style="margin:0 0 14px;">
+    <summary style="cursor:pointer;font-weight:700;font-size:14.5px;list-style:none;">🗂️ Incidencias · RRHH <span style="font-weight:400;color:var(--muted);font-size:12px;">(permisos, vacaciones, enfermedad — clic para abrir)</span></summary>
+    <div class="hint" style="margin-top:10px;">Registra días que <b>no</b> deben contar como “horas que deben”. Requiere la clave de RRHH.</div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:6px;">
+      <div class="grp"><span>Empleado</span><select id="incEmp"><option value="">— Empleado —</option></select></div>
+      <div class="grp"><span>Desde</span><input type="date" id="incIni"></div>
+      <div class="grp"><span>Hasta (opcional)</span><input type="date" id="incFin"></div>
+      <div class="grp"><span>Tipo</span><select id="incTipo"><option value="Vacaciones">Vacaciones</option><option value="Permiso">Permiso</option><option value="Enfermedad/Incapacidad">Enfermedad/Incapacidad</option><option value="Falta justificada">Falta justificada</option></select></div>
+      <div class="grp" style="flex:1;min-width:160px;"><span>Nota (opcional)</span><input type="text" id="incNota" placeholder="con/sin goce, folio…"></div>
+      <div class="grp"><span>Clave RRHH</span><input type="password" id="incKey" placeholder="••••"></div>
+      <button class="btn" id="btnIncAdd" style="height:38px;">Guardar incidencia</button>
+      <span id="incMsg" class="hint" style="margin:0;"></span>
+    </div>
+    <div id="incList" style="margin-top:14px;overflow-x:auto;"></div>
+  </details>
   <div class="kpis" id="kpis"></div>
   <div class="findings" id="findings"></div>
   <div id="fleetView">
@@ -146,6 +162,9 @@ const API_SECRET = "0409";
 const DASH_PASS = "GIR!@007";   // clave para abrir el tablero
 let MARKS = [];
 let EMP_INFO = {};
+let INCID = {};       // normName -> Set de fechas "yyyy-mm-dd" (para el cálculo)
+let INCID_DETAIL = {};// normName -> Map fecha -> {tipo,nota,id} (para el detalle)
+let INCID_LIST = [];  // lista cruda para la tabla de RRHH
 /* ===== Motor v3 (idéntico al verificado en Node/Python) ===== */
 const LUNCH_A=13*60,LUNCH_B=16*60;
 function lunchBucket(d){if(d<30)return "<30 min";if(d<60)return "30–59 min";if(d<90)return "60–89 min";if(d<120)return "90–119 min";return "120+ min";}
@@ -160,9 +179,11 @@ function workedMin(mm){let open=null,w=0;for(const x of mm){if(x.t==="in"){if(op
 function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,info){
   expStart=(expStart===undefined)?null:expStart;tol=tol||0;
   metaDay=(metaDay==null)?8:metaDay;base=base||"periodo";capOPS=(capOPS==null)?48:capOPS;capCOR=(capCOR==null)?40:capCOR;info=info||{};const selCount=selDates.length;
-  const selByWeek={};selDates.forEach(d=>{const wk=weekInfo(d).key;selByWeek[wk]=(selByWeek[wk]||0)+1;});
+  const selByWeek={};const selByWeekDates={};selDates.forEach(d=>{const wk=weekInfo(d).key;selByWeek[wk]=(selByWeek[wk]||0)+1;(selByWeekDates[wk]=selByWeekDates[wk]||[]).push(d);});
   const areaOf=n=>{const r=info[normName(n)];return r?r.area:null;};const modOf=n=>{const r=info[normName(n)];return r?r.mod:null;};
   const capOf=n=>areaOf(n)==="COR"?capCOR:capOPS;const expFor=(wc,c)=>{let e=0;for(const w in wc)e+=Math.min(metaDay*wc[w],c);return +e.toFixed(1);};
+  const _INCID=(typeof INCID!=="undefined"&&INCID)?INCID:{};const _ES=new Set();const incidOf=n=>_INCID[normName(n)]||_ES;
+  const expPeriodoFor=(name,c)=>{const s=incidOf(name);let e=0;for(const w in selByWeekDates){const dd=selByWeekDates[w].filter(d=>!s.has(d)).length;e+=Math.min(metaDay*dd,c);}return +e.toFixed(1);};
   const sel=new Set(selDates);const pd=new Map();
   for(const mk of marks){if(!sel.has(mk.d))continue;if(person&&mk.n!==person)continue;const k=mk.n+"||"+mk.d;if(!pd.has(k))pd.set(k,[]);pd.get(k).push(mk);}
   const per=new Map();const weeks=new Map();let incDays=0,lunchDays=0,totalMarks=0,workTotPrecise=0;
@@ -183,8 +204,8 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
   }
   const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
   const per2=[...per.values()].map(P=>{const lateP=(expStart!=null)?P.arr.filter(a=>a>expStart+tol).length:0;
-    const totH=+P.work.reduce((x,y)=>x+y,0).toFixed(1);const cap=capOf(P.n);const exp=(base==="periodo")?expFor(selByWeek,cap):expFor(P.wkAtt,cap);
-    return {n:P.n,dias:P.dias,totH,exp,saldo:+(totH-exp).toFixed(1),area:areaOf(P.n),mod:modOf(P.n),avgH:P.work.length?+mean(P.work).toFixed(2):null,
+    const totH=+P.work.reduce((x,y)=>x+y,0).toFixed(1);const cap=capOf(P.n);const exp=(base==="periodo")?expPeriodoFor(P.n,cap):expFor(P.wkAtt,cap);const ausDias=selDates.filter(d=>incidOf(P.n).has(d)).length;
+    return {n:P.n,dias:P.dias,totH,exp,ausDias,saldo:+(totH-exp).toFixed(1),area:areaOf(P.n),mod:modOf(P.n),avgH:P.work.length?+mean(P.work).toFixed(2):null,
       lunTot:+P.lun.reduce((x,y)=>x+y,0).toFixed(0),arrAvg:P.arr.length?Math.round(mean(P.arr)):null,depAvg:P.dep.length?Math.round(mean(P.dep)):null,
       lunAvg:P.lun.length?Math.round(mean(P.lun)):null,nin:P.nin,nout:P.nout,io:P.nin+P.nout,inc:P.inc,late:lateP};});
   const arrH={},depH={},lunB={},arrBand={},depBand={};
@@ -193,7 +214,7 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
     if(p.depAvg!=null){depH[Math.floor(p.depAvg/60)]=(depH[Math.floor(p.depAvg/60)]||0)+1;depBand[bandOf(DEP_BANDS,p.depAvg)]++;}
     if(p.lunAvg!=null){lunB[lunchBucket(p.lunAvg)]++;}});
   const withArr=per2.filter(p=>p.arrAvg!=null),withDep=per2.filter(p=>p.depAvg!=null),withLun=per2.filter(p=>p.lunAvg!=null),withWork=per2.filter(p=>p.avgH!=null);
-  if(base==="periodo"&&!person){const seenNorm=new Set(per2.map(p=>normName(p.n)));const rosterNames={};for(const k in info)rosterNames[k]=info[k].nombre;marks.forEach(m=>{const k=normName(m.n);if(!(k in rosterNames))rosterNames[k]=m.n;});for(const k in rosterNames){if(!seenNorm.has(k)){const nm=rosterNames[k];const eA=expFor(selByWeek,capOf(nm));per2.push({n:nm,dias:0,totH:0,exp:eA,saldo:+(-eA).toFixed(1),area:areaOf(nm),mod:modOf(nm),avgH:null,lunTot:0,arrAvg:null,depAvg:null,lunAvg:null,nin:0,nout:0,io:0,inc:0,late:0});}}}
+  if(base==="periodo"&&!person){const seenNorm=new Set(per2.map(p=>normName(p.n)));const rosterNames={};for(const k in info)rosterNames[k]=info[k].nombre;marks.forEach(m=>{const k=normName(m.n);if(!(k in rosterNames))rosterNames[k]=m.n;});for(const k in rosterNames){if(!seenNorm.has(k)){const nm=rosterNames[k];const eA=expPeriodoFor(nm,capOf(nm));const ausA=selDates.filter(d=>incidOf(nm).has(d)).length;per2.push({n:nm,dias:0,totH:0,exp:eA,ausDias:ausA,saldo:+(-eA).toFixed(1),area:areaOf(nm),mod:modOf(nm),avgH:null,lunTot:0,arrAvg:null,depAvg:null,lunAvg:null,nin:0,nout:0,io:0,inc:0,late:0});}}}
   const weeksArr=[...weeks.values()].sort((a,b)=>a.key<b.key?-1:1).map(w=>({key:w.key,label:w.label,personas:w.ppl.size,dp:w.dp,workH:+w.workH.toFixed(1),lunH:+w.lunH.toFixed(1)}));
   const lunTotH=per2.reduce((s,p)=>s+p.lunTot,0)/60;
   return {per:per2,arrH,depH,lunB,arrBand,depBand,weeks:weeksArr,denom:{arr:withArr.length,dep:withDep.length,lun:withLun.length},
@@ -202,7 +223,7 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
       hPerEmp:withWork.length?+mean(withWork.map(p=>p.avgH)).toFixed(2):0,lunAvgEmp:withLun.length?Math.round(mean(withLun.map(p=>p.lunAvg))):null,
       workTot:+workTotPrecise.toFixed(1),lunTot:+lunTotH.toFixed(1),
       incDays,incPeople:per2.filter(p=>p.inc>0).length,latePeople:(expStart!=null)?per2.filter(p=>p.late>0).length:0,
-      lateTotal:(expStart!=null)?per2.reduce((s,p)=>s+p.late,0):0,lunchDays,expStart,tol,
+      lateTotal:(expStart!=null)?per2.reduce((s,p)=>s+p.late,0):0,lunchDays,ausTot:per2.reduce((s,p)=>s+(p.ausDias||0),0),expStart,tol,
       metaDay,base,capOPS,capCOR,expTot:+per2.reduce((s,p)=>s+p.exp,0).toFixed(1),
       debtTot:+per2.reduce((s,p)=>s+Math.max(0,p.exp-p.totH),0).toFixed(1),
       overTot:+per2.reduce((s,p)=>s+Math.max(0,p.totH-p.exp),0).toFixed(1),
@@ -222,6 +243,10 @@ function dayDetail(marks,selDates,person){
     const ubic=[...new Set(mm.map(x=>x.ubic).filter(Boolean))].join("/");
     out.push({d,arr,dep,work:wmin>0?+(wmin/60).toFixed(2):null,lun,nin:ins.length,nout:outs.length,ubic,ok:(ins.length===outs.length&&ins.length>0)});
   }
+  const det=(typeof INCID_DETAIL!=="undefined"&&INCID_DETAIL[normName(person)])||null;
+  if(det){const selS=new Set(selDates);const present=new Set(out.map(r=>r.d));
+    out.forEach(r=>{if(det.has(r.d))r.incid=det.get(r.d).tipo;});
+    det.forEach((v,d)=>{if(selS.has(d)&&!present.has(d))out.push({d,arr:null,dep:null,work:null,lun:null,nin:0,nout:0,ubic:"",ok:false,incid:v.tipo});});}
   out.sort((a,b)=>a.d<b.d?-1:1);return out;
 }
 /* ===== UI ===== */
@@ -389,7 +414,7 @@ function renderDay(person,dates,exp,tol){
   const rows=dayDetail(marksFiltered(),dates,person);
   $("tblDay").querySelector("thead").innerHTML="<tr><th class='l'>Fecha</th><th>Llegada</th><th>Salida</th><th>Trabajado</th><th>Comida</th><th>Entr.</th><th>Sal.</th><th>Sede</th><th>Estado</th></tr>";
   $("tblDay").querySelector("tbody").innerHTML=rows.map(r=>{const late=(exp!=null&&r.arr!=null&&r.arr>exp+tol);
-    return "<tr><td class='l'>"+fmtD(r.d)+"</td><td"+(late?" class='flagcell'":"")+">"+hm(r.arr)+(late?" ⚠":"")+"</td><td>"+hm(r.dep)+"</td><td>"+(r.work==null?"—":r.work+" h")+"</td><td>"+(r.lun==null?"—":r.lun+" min")+"</td><td>"+r.nin+"</td><td>"+r.nout+"</td><td>"+(r.ubic||"—")+"</td><td>"+(r.ok?"<span class='badok'>OK</span>":"<span class='badno'>Incompleto</span>")+"</td></tr>";}).join("")||"<tr><td colspan='9' class='l'>Sin días</td></tr>";
+    return "<tr><td class='l'>"+fmtD(r.d)+"</td><td"+(late?" class='flagcell'":"")+">"+hm(r.arr)+(late?" ⚠":"")+"</td><td>"+hm(r.dep)+"</td><td>"+(r.work==null?"—":r.work+" h")+"</td><td>"+(r.lun==null?"—":r.lun+" min")+"</td><td>"+r.nin+"</td><td>"+r.nout+"</td><td>"+(r.ubic||"—")+"</td><td>"+(r.incid?"<span class='badinc'>"+escH(r.incid)+"</span>":(r.ok?"<span class='badok'>OK</span>":"<span class='badno'>Incompleto</span>"))+"</td></tr>";}).join("")||"<tr><td colspan='9' class='l'>Sin días</td></tr>";
 }
 let COLS;
 function buildCols(exp){COLS=[{f:"n",l:"Empleado",cls:"l"},{f:"area",l:"Área",cls:"l",fmt:v=>v||"?"},{f:"mod",l:"Mod.",cls:"l",fmt:v=>v||"?"},{f:"dias",l:"Días"},{f:"totH",l:"Trabajado",fmt:v=>v.toFixed(1)+" h"},{f:"exp",l:"Esperado",fmt:v=>v.toFixed(1)+" h"},{f:"saldo",l:"Saldo",fmt:v=>(v>0?"+":"")+v.toFixed(1)+" h"},{f:"avgH",l:"Prom h/día",fmt:v=>v==null?"—":v.toFixed(2)},{f:"arrAvg",l:"Llegada",fmt:hm},{f:"depAvg",l:"Salida",fmt:hm},{f:"lunAvg",l:"Comida",fmt:v=>v==null?"—":v+" min"},{f:"nin",l:"Entr."},{f:"nout",l:"Sal."}];if(exp!=null)COLS.push({f:"late",l:"Tardanzas"});COLS.push({f:"inc",l:"Días incompl."});}
@@ -453,14 +478,29 @@ async function cargarYRender(){
     MARKS = parseMarcas(mr.marcas);
     EMP_INFO = {};
     (er.empleados||[]).forEach(function(e){ EMP_INFO[normName(e.nombre)]={nombre:e.nombre,pin:String(e.pin),mod:e.modalidad,area:e.area}; });
+    const ir = await fetch(API_URL+"?action=incidencias&secret="+encodeURIComponent(API_SECRET)).then(r=>r.json());
+    buildIncid(ir.incidencias||[]);
     ALL_DATES=[...new Set(MARKS.map(m=>m.d))].sort();
     ALL_SET=new Set(ALL_DATES);
     MONTHS=[...new Set(ALL_DATES.map(ym))].sort();
     viewMonth=MONTHS.length?MONTHS[MONTHS.length-1]:"";
     selected=new Set(ALL_DATES.filter(d=>!EXCL.has(d)));
-    buildMonthSel();buildCal();buildPersonSelect();render();
+    buildMonthSel();buildCal();buildPersonSelect();buildIncidEmp();renderIncidList();render();
   }catch(e){ const s=document.getElementById("subtitle"); if(s) s.textContent="Error al cargar del central: "+e.message; }
 }
+/* ===== Incidencias (RRHH) ===== */
+function escH(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function fmtD2(d){if(!d)return "—";const a=String(d).slice(0,10).split("-");return a.length===3?a[2]+"/"+a[1]:String(d);}
+function expandRange(ini,fin){ini=(ini||"").slice(0,10);fin=(fin||"").slice(0,10)||ini;if(!ini)return [];const a=new Date(ini+"T00:00:00Z");let b=new Date((fin||ini)+"T00:00:00Z");if(isNaN(a.getTime()))return [];if(isNaN(b.getTime())||b<a)b=a;const out=[];for(let t=a.getTime();t<=b.getTime();t+=86400000){const d=new Date(t);out.push(d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate()));if(out.length>400)break;}return out;}
+function buildIncid(list){INCID={};INCID_DETAIL={};INCID_LIST=(list||[]).slice();INCID_LIST.forEach(function(it){const k=normName(it.nombre||"");if(!k)return;const dates=expandRange(it.ini,it.fin);if(!INCID[k])INCID[k]=new Set();if(!INCID_DETAIL[k])INCID_DETAIL[k]=new Map();dates.forEach(function(d){INCID[k].add(d);INCID_DETAIL[k].set(d,{tipo:it.tipo,nota:it.nota,id:it.id});});});}
+function buildIncidEmp(){const sel=$("incEmp");if(!sel)return;const set=new Set();Object.keys(EMP_INFO).forEach(function(k){set.add(EMP_INFO[k].nombre);});MARKS.forEach(function(m){set.add(m.n);});const names=[...set].filter(Boolean).sort(function(a,b){return a.localeCompare(b,"es");});const cur=sel.value;sel.innerHTML='<option value="">— Empleado —</option>'+names.map(function(n){return '<option value="'+escH(n)+'">'+escH(n)+'</option>';}).join("");if(cur)sel.value=cur;}
+function incMsg(t,err){const e=$("incMsg");if(!e)return;e.textContent=t||"";e.style.color=err?"#c0392b":"var(--muted)";}
+function renderIncidList(){const el=$("incList");if(!el)return;if(!INCID_LIST.length){el.innerHTML="<div class='hint' style='margin:0;'>Sin incidencias registradas.</div>";return;}const rows=INCID_LIST.slice().sort(function(a,b){return (a.ini<b.ini)?1:-1;}).map(function(it){const f=(it.fin&&it.fin!==it.ini)?(fmtD2(it.ini)+" – "+fmtD2(it.fin)):fmtD2(it.ini);return "<tr><td class='l'>"+escH(it.nombre)+"</td><td>"+f+"</td><td>"+escH(it.tipo)+"</td><td>"+escH(it.nota||"")+"</td><td><button class='btn' data-id='"+escH(it.id)+"' style='padding:2px 9px;'>✕</button></td></tr>";}).join("");el.innerHTML="<table><thead><tr><th class='l'>Empleado</th><th>Fechas</th><th>Tipo</th><th>Nota</th><th></th></tr></thead><tbody>"+rows+"</tbody></table>";el.querySelectorAll("button[data-id]").forEach(function(b){b.addEventListener("click",function(){incidDel(b.dataset.id);});});}
+async function reloadIncid(){try{const ir=await fetch(API_URL+"?action=incidencias&secret="+encodeURIComponent(API_SECRET)).then(function(r){return r.json();});buildIncid(ir.incidencias||[]);renderIncidList();render();}catch(e){incMsg("No se pudo recargar: "+e.message,true);}}
+async function incidAdd(){const nombre=$("incEmp").value,ini=$("incIni").value,fin=$("incFin").value||$("incIni").value,tipo=$("incTipo").value,nota=$("incNota").value,key=$("incKey").value;if(!nombre||!ini||!tipo){incMsg("Completa empleado, fecha (Desde) y tipo.",true);return;}if(!key){incMsg("Ingresa la clave RRHH.",true);return;}incMsg("Guardando…");try{const r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({secret:API_SECRET,rrhh:key,action:"incidencia_add",incidencia:{nombre:nombre,ini:ini,fin:fin,tipo:tipo,nota:nota,por:"RRHH"}})}).then(function(x){return x.json();});if(!r||!r.ok){incMsg((r&&r.error)||"Error al guardar",true);return;}$("incNota").value="";incMsg("Guardado ✓");await reloadIncid();}catch(e){incMsg("Error de red: "+e.message,true);}}
+async function incidDel(id){const key=$("incKey").value||prompt("Clave RRHH para borrar:");if(!key)return;if(!confirm("¿Borrar esta incidencia?"))return;incMsg("Borrando…");try{const r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({secret:API_SECRET,rrhh:key,action:"incidencia_baja",id:id})}).then(function(x){return x.json();});if(!r||!r.ok){incMsg((r&&r.error)||"Error al borrar",true);return;}incMsg("Borrado ✓");await reloadIncid();}catch(e){incMsg("Error de red: "+e.message,true);}}
+if($("btnIncAdd"))$("btnIncAdd").addEventListener("click",incidAdd);
+
 (function(){
   let okPrev=false; try{ okPrev=sessionStorage.getItem("dashok")==="1"; }catch(e){}
   const pass = okPrev ? DASH_PASS : prompt("Clave del tablero:");
