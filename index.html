@@ -791,6 +791,10 @@ $("pinCancel").addEventListener("click", () => { pinPerson = null; hide("pinModa
 
 /* ================= Acción entrada/salida ================= */
 let actionPerson = null, actionTimer = null;
+const MAX_OPEN_H = 18; // tras estas horas, una entrada sin salida se considera turno abandonado y permite nueva entrada
+function lastMarkOf(personId) {
+  return DB.records.filter(r => r.personId === personId).sort((a, b) => b.ts - a.ts)[0] || null;
+}
 function todayRecords(personId) {
   const key = dateKey(new Date());
   return DB.records
@@ -802,18 +806,25 @@ function openAction(person) {
   $("actAvatar").style.background = colorFor(person.nombre);
   $("actAvatar").textContent = initials(person.nombre);
   $("actName").textContent = person.nombre;
-  const today = todayRecords(person.id);
-  const last = today[today.length - 1];
-  let suggest = "entrada";
-  if (last) {
-    const d = new Date(last.ts);
-    $("actLast").textContent = "Última marca de hoy: " + (last.tipo === "entrada" ? "Entrada" : "Salida") + " a las " + fmtHoraCorta(d);
-    if (last.tipo === "entrada") suggest = "salida";
+  const last = lastMarkOf(person.id);
+  const lastIsIn = !!(last && last.tipo === "entrada");
+  const ageMs = last ? (Date.now() - last.ts) : Infinity;
+  const openReciente = lastIsIn && ageMs < MAX_OPEN_H * 3600 * 1000;
+  const canEntrada = !openReciente;   // bloquea ENTRADA solo si hay una entrada abierta reciente
+  const canSalida = lastIsIn;         // SALIDA solo si la última marca fue entrada
+  if (openReciente) {
+    $("actLast").textContent = "Estás DENTRO desde las " + fmtHoraCorta(new Date(last.ts)) + " — marca SALIDA";
+  } else if (lastIsIn) {
+    $("actLast").textContent = "Entrada sin cerrar (" + fmtHoraCorta(new Date(last.ts)) + "). Marca SALIDA para cerrarla, o ENTRADA si es turno nuevo.";
+  } else if (last) {
+    $("actLast").textContent = "Última marca: Salida a las " + fmtHoraCorta(new Date(last.ts)) + " — marca ENTRADA";
   } else {
-    $("actLast").textContent = "Sin marcas el día de hoy";
+    $("actLast").textContent = "Sin marcas — marca ENTRADA";
   }
-  $("btnEntrada").classList.toggle("suggested", suggest === "entrada");
-  $("btnSalida").classList.toggle("suggested", suggest === "salida");
+  $("btnEntrada").disabled = !canEntrada;
+  $("btnSalida").disabled = !canSalida;
+  $("btnEntrada").classList.toggle("suggested", canEntrada && !openReciente);
+  $("btnSalida").classList.toggle("suggested", openReciente);
   $("actClock").textContent = fmtHora(new Date());
   show("actionView");
   camStart();
@@ -833,6 +844,16 @@ $("actCancel").addEventListener("click", closeAction);
 let marking = false;
 function mark(tipo) {
   if (!actionPerson || marking) return;
+  // --- Regla de alternancia (rolling): no salida sin entrada, no doble entrada ---
+  const _last = lastMarkOf(actionPerson.id);
+  const _lastIsIn = !!(_last && _last.tipo === "entrada");
+  const _ageMs = _last ? (Date.now() - _last.ts) : Infinity;
+  if (tipo === "entrada" && _lastIsIn && _ageMs < MAX_OPEN_H * 3600 * 1000) {
+    toast("Ya tienes una ENTRADA abierta. Marca SALIDA primero.", true); return;
+  }
+  if (tipo === "salida" && !_lastIsIn) {
+    toast("No tienes ENTRADA registrada. Marca ENTRADA primero.", true); return;
+  }
   const now = Date.now();
   const lastAny = DB.records
     .filter(r => r.personId === actionPerson.id)
@@ -856,7 +877,11 @@ function mark(tipo) {
   const payload = { tsISO: new Date(now).toISOString(), empleadoId: actionPerson.id, nombre: actionPerson.nombre,
     tipo: tipo, ubicacion: DB.settings.ubicacion, lat: geo ? geo.lat : "", lng: geo ? geo.lng : "", acc: geo ? geo.acc : "", device: deviceId() };
   apiPost({ action: "marca", marca: payload })
-    .then(r => { if (!(r && r.ok)) encolar(payload); else actualizarColaPill(); })
+    .then(r => {
+      if (r && r.ok) { actualizarColaPill(); }
+      else if (r && r.rule) { DB.records = DB.records.filter(x => x.id !== rec.id); save(); photoDel(rec.id); toast("El central rechazó la marca: " + (r.error || "regla de alternancia"), true); }
+      else { encolar(payload); }
+    })
     .catch(() => encolar(payload));
   const d = new Date(now);
   const isIn = tipo === "entrada";
