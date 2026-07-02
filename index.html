@@ -518,12 +518,48 @@ function apiPost(payload) {
     body: JSON.stringify(Object.assign({ secret: API_SECRET }, payload))
   }).then(r => r.json());
 }
+/* ===== Reconocimiento facial (comparación 1:1, modo observación, fail-open) ===== */
+const FACE_MODEL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
+const FACE_TH = 0.55;        // umbral de coincidencia (calibrar con datos reales)
+let FACE_READY = false, FACE_OPTS = null, ROSTROS = {}, ROSTROS_ID = {};
+function normNom(s){ return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim().replace(/\s+/g," "); }
+async function initFace(){
+  try{
+    if(!window.faceapi) return;
+    await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL);
+    FACE_OPTS = new faceapi.TinyFaceDetectorOptions({ inputSize:320, scoreThreshold:0.5 });
+    FACE_READY = true; console.log("Reconocimiento facial listo.");
+  }catch(e){ console.warn("initFace", e); FACE_READY=false; }
+}
+async function computeFaceMatch(person){
+  try{
+    if(!FACE_READY || !window.faceapi) return {};
+    const ref = (person.id && ROSTROS_ID[person.id]) || ROSTROS[normNom(person.nombre)];
+    if(!ref || !ref.length) return {};                        // no enrolado → sin dato
+    const v = $("camVideo"); if(!v || !v.srcObject) return {};
+    const det = await faceapi.detectSingleFace(v, FACE_OPTS).withFaceLandmarks().withFaceDescriptor();
+    if(!det) return { matchDist:"", sospechoso:true };          // no detectó cara → marca sospechosa
+    const dist = faceapi.euclideanDistance(det.descriptor, Float32Array.from(ref));
+    return { matchDist:+dist.toFixed(3), sospechoso: dist > FACE_TH };
+  }catch(e){ return {}; }
+}
+(function loadFaceApi(){ try{ var s=document.createElement("script"); s.src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"; s.onload=initFace; s.onerror=function(){console.warn("face-api no cargó");}; document.head.appendChild(s); }catch(e){} })();
+
 async function cargarEmpleados() {
   try {
     const r = await apiGet({ action: "empleados", secret: API_SECRET });
     if (r && r.ok && Array.isArray(r.empleados)) {
       DB.people = r.empleados.map(e => ({ id: e.id, nombre: e.nombre, pin: String(e.pin),
         area: e.area, modalidad: e.modalidad, activo: e.activo !== false }));
+      try {
+        const rr = await apiGet({ action: "rostros", secret: API_SECRET });
+        if (rr && rr.ok && Array.isArray(rr.rostros)) {
+          ROSTROS = {}; ROSTROS_ID = {};
+          rr.rostros.forEach(function(x){ if (x.rostro && x.rostro.length) { ROSTROS[normNom(x.nombre)] = x.rostro; if (x.id) ROSTROS_ID[x.id] = x.rostro; } });
+        }
+      } catch (e) { /* sin rostros: el matching queda inactivo, no afecta el checado */ }
       DB.settings.empSync = Date.now();
       save();
       return true;
@@ -842,7 +878,7 @@ function closeAction() {
 $("actCancel").addEventListener("click", closeAction);
 
 let marking = false;
-function mark(tipo) {
+async function mark(tipo) {
   if (!actionPerson || marking) return;
   // --- Regla de alternancia (rolling): no salida sin entrada, no doble entrada ---
   const _last = lastMarkOf(actionPerson.id);
@@ -869,13 +905,15 @@ function mark(tipo) {
   marking = true;
   const fotoData = camCapture();
   const geo = geoCurrent();
+  const face = await computeFaceMatch(actionPerson);   // {matchDist, sospechoso} — vacío si no aplica (fail-open)
   const rec = { id: uid("r"), personId: actionPerson.id, nombre: actionPerson.nombre, ts: now, tipo, foto: !!fotoData, geo: geo };
   DB.records.push(rec);
   save();
   if (fotoData) photoPut(rec.id, fotoData);
   // enviar al repositorio central (o encolar si no hay red)
   const payload = { tsISO: new Date(now).toISOString(), empleadoId: actionPerson.id, nombre: actionPerson.nombre,
-    tipo: tipo, ubicacion: DB.settings.ubicacion, lat: geo ? geo.lat : "", lng: geo ? geo.lng : "", acc: geo ? geo.acc : "", device: deviceId() };
+    tipo: tipo, ubicacion: DB.settings.ubicacion, lat: geo ? geo.lat : "", lng: geo ? geo.lng : "", acc: geo ? geo.acc : "", device: deviceId(),
+    matchDist: (face.matchDist===undefined ? "" : face.matchDist), sospechoso: !!face.sospechoso };
   apiPost({ action: "marca", marca: payload })
     .then(r => {
       if (r && r.ok) { actualizarColaPill(); }

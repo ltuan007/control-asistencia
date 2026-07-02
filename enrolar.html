@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Enrolar rostros — Asistencia</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--line:#334155;--txt:#e2e8f0;--muted:#94a3b8;--green:#22c55e;--red:#ef4444;--accent:#3b82f6;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,sans-serif;padding:14px;max-width:640px;margin:0 auto;}
+  h1{font-size:19px;margin:6px 0;}
+  .muted{color:var(--muted);font-size:13px;line-height:1.5;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0;}
+  video{width:100%;border-radius:12px;background:#000;transform:scaleX(-1);}
+  select,input{width:100%;background:#0b1220;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:11px;font-size:15px;}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  button{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:12px 16px;font-size:15px;font-weight:700;cursor:pointer;flex:1;}
+  button.sec{background:#334155;}
+  button:disabled{opacity:.5;}
+  #status{font-size:13px;color:#f59e0b;min-height:18px;margin-top:8px;}
+  .enr{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding:7px 0;font-size:14px;}
+  .ok{color:var(--green);} .no{color:var(--muted);}
+</style>
+</head>
+<body>
+  <h1>📷 Enrolar rostros</h1>
+  <p class="muted">Herramienta de administración. Toma la huella facial de cada empleado y la guarda en el central (para que cualquier iPad valide). Buena luz, de frente, sin cubrebocas.</p>
+
+  <div class="card">
+    <video id="cam" autoplay muted playsinline></video>
+    <div id="status">Cargando…</div>
+  </div>
+
+  <div class="card">
+    <label class="muted">Empleado</label>
+    <select id="emp"><option value="">— elige —</option></select>
+    <div class="row" style="margin-top:10px;">
+      <button id="btnEnrol" disabled>➕ Enrolar (3 tomas)</button>
+    </div>
+    <div id="msg" class="muted" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="card">
+    <div class="muted" style="margin-bottom:6px;">Estado de enrolamiento</div>
+    <div id="lista"></div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+<script>
+const API_URL="https://script.google.com/macros/s/AKfycbwXZZ9I2TFSS1g_ATO8pixSXG7CvewZEdxfQ2SbAprnPYmiqQ7w01N91Ak9HUCKTRbFUA/exec";
+const API_SECRET="0409";
+const GATE="GIR!@007";
+const MODEL="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
+const $=id=>document.getElementById(id);
+const status=t=>{$("status").textContent=t||"";};
+const msg=(t,err)=>{$("msg").textContent=t||"";$("msg").style.color=err?"#ef4444":"var(--muted)";};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const norm=s=>String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim().replace(/\s+/g," ");
+let opts, EMP=[], ROSTROS={}, busy=false;
+
+(function(){ let ok=false; try{ ok=sessionStorage.getItem("enrok")==="1"; }catch(e){}
+  const p= ok?GATE:prompt("Clave de administrador:");
+  if(p!==GATE){ document.body.innerHTML="<p style='padding:40px;text-align:center'>Acceso denegado</p>"; throw new Error("gate"); }
+  try{ sessionStorage.setItem("enrok","1"); }catch(e){}
+})();
+
+function apiGet(params){ const q=Object.keys(params).map(k=>k+"="+encodeURIComponent(params[k])).join("&"); return fetch(API_URL+"?"+q).then(r=>r.json()); }
+function apiPost(body){ return fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(Object.assign({secret:API_SECRET},body))}).then(r=>r.json()); }
+
+async function cargar(){
+  try{
+    const e=await apiGet({action:"empleados",secret:API_SECRET});
+    EMP=(e&&e.empleados)||[];
+    $("emp").innerHTML='<option value="">— elige —</option>'+EMP.map(x=>'<option value="'+x.id+'">'+x.nombre+'</option>').join("");
+    const rr=await apiGet({action:"rostros",secret:API_SECRET});
+    ROSTROS={}; ((rr&&rr.rostros)||[]).forEach(x=>{ if(x.rostro&&x.rostro.length){ ROSTROS[norm(x.nombre)]=true; if(x.id)ROSTROS[x.id]=true; } });
+    renderLista();
+  }catch(err){ status("Error cargando empleados: "+err.message); }
+}
+function renderLista(){
+  if(!EMP.length){ $("lista").innerHTML='<div class="muted">Sin empleados.</div>'; return; }
+  $("lista").innerHTML=EMP.map(x=>{ const has=ROSTROS[x.id]||ROSTROS[norm(x.nombre)];
+    return '<div class="enr"><span>'+x.nombre+'</span><span class="'+(has?"ok":"no")+'">'+(has?"✔ enrolado":"— pendiente")+'</span></div>'; }).join("");
+}
+
+async function init(){
+  try{
+    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL);
+    opts=new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:0.5});
+  }catch(e){ status("Error cargando modelos: "+e.message); return; }
+  try{
+    const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false});
+    $("cam").srcObject=st; await $("cam").play();
+  }catch(e){ status("No pude usar la cámara: "+e.message); return; }
+  await cargar();
+  status("Listo. Elige empleado y enrola.");
+  $("btnEnrol").disabled=false;
+}
+async function grab(){ const d=await faceapi.detectSingleFace($("cam"),opts).withFaceLandmarks().withFaceDescriptor(); return d?d.descriptor:null; }
+
+async function enrolar(){
+  const id=$("emp").value; if(!id){ msg("Elige un empleado.",true); return; }
+  const emp=EMP.find(x=>x.id===id); if(!emp)return;
+  if(busy)return; busy=true; msg("Tomando 3 muestras… mira a la cámara."); $("btnEnrol").disabled=true;
+  const samples=[];
+  for(let i=0;i<3;i++){ const d=await grab(); if(d)samples.push(d); await sleep(300); }
+  if(!samples.length){ msg("No detecté cara. Acércate y con buena luz.",true); busy=false; $("btnEnrol").disabled=false; return; }
+  const avg=new Float32Array(128);
+  samples.forEach(s=>{ for(let i=0;i<128;i++) avg[i]+=s[i]; });
+  for(let i=0;i<128;i++) avg[i]/=samples.length;
+  msg("Guardando en el central…");
+  try{
+    const r=await apiPost({action:"rostro_set",rostro:{empleadoId:emp.id,nombre:emp.nombre,descriptor:Array.from(avg)}});
+    if(r&&r.ok){ ROSTROS[emp.id]=true; ROSTROS[norm(emp.nombre)]=true; renderLista(); msg("✅ "+emp.nombre+" enrolado ("+samples.length+" muestras)."); }
+    else msg("No se pudo guardar: "+((r&&r.error)||"error"),true);
+  }catch(e){ msg("Error de red: "+e.message,true); }
+  busy=false; $("btnEnrol").disabled=false;
+}
+$("btnEnrol").addEventListener("click",enrolar);
+init();
+</script>
+</body>
+</html>

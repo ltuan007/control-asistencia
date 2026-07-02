@@ -129,6 +129,11 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px;}
     </div>
     <div id="incList" style="margin-top:14px;overflow-x:auto;"></div>
   </details>
+  <details class="panel" id="suspPanel" style="margin:0 0 14px;">
+    <summary style="cursor:pointer;font-weight:700;font-size:14.5px;list-style:none;">🕵️ Marcas sospechosas (rostro) <span id="suspCount" style="background:#7f1d1d;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px;">0</span></summary>
+    <div class="hint" style="margin-top:10px;">Marcas donde la cara <b>no coincidió</b> con la huella del empleado (o no se detectó cara). Modo observación — no bloquea, solo señala para tu revisión. La foto queda en el iPad donde se marcó.</div>
+    <div id="suspList" style="margin-top:10px;overflow-x:auto;"></div>
+  </details>
   <div class="kpis" id="kpis"></div>
   <div class="findings" id="findings"></div>
   <div id="fleetView">
@@ -470,7 +475,7 @@ function openDrill(title,rows){
 function closeDrill(){$("drill").classList.add("hidden");}
 $("drillClose").addEventListener("click",closeDrill);
 $("drill").addEventListener("click",e=>{if(e.target.id==="drill")closeDrill();});
-function parseMarcas(rows){return (rows||[]).map(function(r){const dt=new Date(r[1]);const d=dt.getFullYear()+"-"+p2(dt.getMonth()+1)+"-"+p2(dt.getDate());return {n:r[3],d:d,m:dt.getHours()*60+dt.getMinutes(),t:(r[4]==="entrada"||r[4]==="in")?"in":"out",ubic:r[5]||""};});}
+function parseMarcas(rows){return (rows||[]).map(function(r){const dt=new Date(r[1]);const d=dt.getFullYear()+"-"+p2(dt.getMonth()+1)+"-"+p2(dt.getDate());return {n:r[3],d:d,m:dt.getHours()*60+dt.getMinutes(),t:(r[4]==="entrada"||r[4]==="in")?"in":"out",ubic:r[5]||"",susp:(r[11]===true||r[11]==="true"||r[11]==="TRUE"),dist:(r[10]===""||r[10]==null?null:r[10])};});}
 async function cargarYRender(){
   try{
     const mr = await fetch(API_URL+"?action=marcas&secret="+encodeURIComponent(API_SECRET)).then(r=>r.json());
@@ -485,7 +490,7 @@ async function cargarYRender(){
     MONTHS=[...new Set(ALL_DATES.map(ym))].sort();
     viewMonth=MONTHS.length?MONTHS[MONTHS.length-1]:"";
     selected=new Set(ALL_DATES.filter(d=>!EXCL.has(d)));
-    buildMonthSel();buildCal();buildPersonSelect();buildIncidEmp();renderIncidList();render();
+    buildMonthSel();buildCal();buildPersonSelect();buildIncidEmp();renderIncidList();renderSospechosas();render();
   }catch(e){ const s=document.getElementById("subtitle"); if(s) s.textContent="Error al cargar del central: "+e.message; }
 }
 /* ===== Incidencias (RRHH) ===== */
@@ -500,6 +505,15 @@ async function reloadIncid(){try{const ir=await fetch(API_URL+"?action=incidenci
 async function incidAdd(){const nombre=$("incEmp").value,ini=$("incIni").value,fin=$("incFin").value||$("incIni").value,tipo=$("incTipo").value,nota=$("incNota").value,key=$("incKey").value;if(!nombre||!ini||!tipo){incMsg("Completa empleado, fecha (Desde) y tipo.",true);return;}if(!key){incMsg("Ingresa la clave RRHH.",true);return;}incMsg("Guardando…");try{const r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({secret:API_SECRET,rrhh:key,action:"incidencia_add",incidencia:{nombre:nombre,ini:ini,fin:fin,tipo:tipo,nota:nota,por:"RRHH"}})}).then(function(x){return x.json();});if(!r||!r.ok){incMsg((r&&r.error)||"Error al guardar",true);return;}$("incNota").value="";incMsg("Guardado ✓");await reloadIncid();}catch(e){incMsg("Error de red: "+e.message,true);}}
 async function incidDel(id){const key=$("incKey").value||prompt("Clave RRHH para borrar:");if(!key)return;if(!confirm("¿Borrar esta incidencia?"))return;incMsg("Borrando…");try{const r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({secret:API_SECRET,rrhh:key,action:"incidencia_baja",id:id})}).then(function(x){return x.json();});if(!r||!r.ok){incMsg((r&&r.error)||"Error al borrar",true);return;}incMsg("Borrado ✓");await reloadIncid();}catch(e){incMsg("Error de red: "+e.message,true);}}
 if($("btnIncAdd"))$("btnIncAdd").addEventListener("click",incidAdd);
+function renderSospechosas(){
+  const el=$("suspList"); if(!el) return;
+  const rows=MARKS.filter(m=>m.susp).slice().sort((a,b)=>a.d<b.d?1:(a.d>b.d?-1:b.m-a.m));
+  const cnt=$("suspCount"); if(cnt) cnt.textContent=rows.length;
+  if(!rows.length){ el.innerHTML="<div class='hint' style='margin:0;'>Sin marcas sospechosas. 👌</div>"; return; }
+  el.innerHTML="<table><thead><tr><th class='l'>Empleado</th><th>Fecha</th><th>Hora</th><th>Tipo</th><th>Sede</th><th>Dist.</th></tr></thead><tbody>"+
+    rows.map(function(m){return "<tr><td class='l'>"+escH(m.n)+"</td><td>"+fmtD2(m.d)+"</td><td>"+hm(m.m)+"</td><td>"+(m.t==="in"?"Entrada":"Salida")+"</td><td>"+escH(m.ubic||"—")+"</td><td>"+(m.dist==null?"sin rostro":(+m.dist).toFixed(3))+"</td></tr>";}).join("")+
+    "</tbody></table>";
+}
 
 (function(){
   let okPrev=false; try{ okPrev=sessionStorage.getItem("dashok")==="1"; }catch(e){}
