@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Prueba de rostro — Asistencia</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--line:#334155;--txt:#e2e8f0;--muted:#94a3b8;--green:#22c55e;--red:#ef4444;--amber:#f59e0b;--accent:#3b82f6;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,sans-serif;padding:14px;max-width:640px;margin:0 auto;}
+  h1{font-size:19px;margin:6px 0;}
+  .muted{color:var(--muted);font-size:13px;line-height:1.5;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0;}
+  video{width:100%;border-radius:12px;background:#000;transform:scaleX(-1);}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  input[type=text]{flex:1;min-width:120px;background:#0b1220;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:11px;font-size:15px;}
+  button{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:11px 14px;font-size:15px;font-weight:600;cursor:pointer;}
+  button.sec{background:#334155;}
+  button:disabled{opacity:.5;}
+  #verdict{font-size:26px;font-weight:800;text-align:center;padding:10px;border-radius:12px;margin-top:8px;}
+  #dist{text-align:center;color:var(--muted);font-size:14px;}
+  .enr{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding:8px 0;font-size:14px;}
+  .enr button{background:transparent;color:var(--red);padding:4px 8px;font-size:13px;}
+  #status{font-size:13px;color:var(--amber);min-height:18px;}
+  label.sl{display:block;font-size:13px;color:var(--muted);margin-top:8px;}
+  input[type=range]{width:100%;}
+</style>
+</head>
+<body>
+  <h1>🧪 Prueba de reconocimiento facial</h1>
+  <p class="muted">Página de prueba independiente. <b>No guarda nada en el central</b> — las huellas se quedan solo en este dispositivo (para probar). Enrola 2–3 personas y checa si distingue bien en tu luz. Distancia <b>baja = misma persona</b>.</p>
+
+  <div class="card">
+    <video id="cam" autoplay muted playsinline></video>
+    <div id="status">Cargando modelos…</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <input type="text" id="name" placeholder="Nombre de la persona">
+      <button id="btnEnrol" disabled>➕ Enrolar (3 tomas)</button>
+    </div>
+    <div id="enrolled"></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:center;">
+      <button id="btnTest" disabled>🔍 Probar ahora</button>
+      <button id="btnLive" class="sec" disabled>▶️ Modo continuo</button>
+    </div>
+    <div id="verdict" style="background:#0b1220;">—</div>
+    <div id="dist"></div>
+    <label class="sl">Umbral de coincidencia: <b id="thVal">0.55</b> (menor = más estricto)</label>
+    <input type="range" id="th" min="0.30" max="0.80" step="0.01" value="0.55">
+  </div>
+
+  <button id="btnClear" class="sec" style="width:100%;">🗑️ Borrar todas las huellas de prueba</button>
+  <p class="muted" style="margin-top:14px;">Nota: esto es solo un prototipo para decidir si la tecnología sirve en tu ambiente. Si convence, se integra al kiosko con la huella en el central. Es dato biométrico: para uso real necesitas consentimiento del personal.</p>
+
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+<script>
+const MODEL="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
+const $=id=>document.getElementById(id);
+const status=t=>{$("status").textContent=t||"";};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let enrolled=[], live=false, busy=false, opts;
+
+try{ enrolled=JSON.parse(localStorage.getItem("rostros_prueba")||"[]"); }catch(e){ enrolled=[]; }
+function save(){ try{ localStorage.setItem("rostros_prueba",JSON.stringify(enrolled)); }catch(e){} renderEnrolled(); }
+function renderEnrolled(){
+  $("enrolled").innerHTML = enrolled.length ? enrolled.map((e,i)=>
+    '<div class="enr"><span>👤 '+e.name+'</span><button data-i="'+i+'">quitar</button></div>').join("")
+    : '<div class="muted" style="margin-top:8px;">Sin huellas aún. Escribe un nombre y toca Enrolar.</div>';
+  $("enrolled").querySelectorAll("button[data-i]").forEach(b=>b.addEventListener("click",()=>{ enrolled.splice(+b.dataset.i,1); save(); }));
+}
+renderEnrolled();
+
+async function init(){
+  try{
+    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL);
+    opts=new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:0.5});
+  }catch(e){ status("Error cargando modelos: "+e.message); return; }
+  status("Modelos listos. Encendiendo cámara…");
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"},audio:false});
+    $("cam").srcObject=stream;
+    await $("cam").play();
+  }catch(e){ status("No pude usar la cámara: "+e.message+" (dale permiso y usa https)"); return; }
+  status("Todo listo. Enrola a alguien y prueba.");
+  $("btnEnrol").disabled=false; $("btnTest").disabled=false; $("btnLive").disabled=false;
+}
+
+async function grab(){
+  const det=await faceapi.detectSingleFace($("cam"),opts).withFaceLandmarks().withFaceDescriptor();
+  return det?det.descriptor:null;
+}
+async function enrol(){
+  const name=$("name").value.trim();
+  if(!name){ status("Escribe un nombre primero."); return; }
+  if(busy)return; busy=true; status("Tomando 3 muestras… mira a la cámara.");
+  const samples=[];
+  for(let i=0;i<3;i++){ const d=await grab(); if(d)samples.push(d); await sleep(250); }
+  busy=false;
+  if(!samples.length){ status("No detecté cara. Acércate y con buena luz."); return; }
+  const avg=new Float32Array(128);
+  samples.forEach(s=>{ for(let i=0;i<128;i++) avg[i]+=s[i]; });
+  for(let i=0;i<128;i++) avg[i]/=samples.length;
+  enrolled.push({name,desc:Array.from(avg)}); save();
+  $("name").value="";
+  status("✅ "+name+" enrolado ("+samples.length+" muestras).");
+}
+function showVerdict(best,dist){
+  const th=parseFloat($("th").value);
+  if(!best){ $("verdict").textContent="No detecto cara"; $("verdict").style.background="#0b1220"; $("dist").textContent=""; return; }
+  const ok=dist<=th;
+  $("verdict").textContent=(ok?"✔ ":"✘ ")+best.name;
+  $("verdict").style.background=ok?"rgba(34,197,94,.18)":"rgba(239,68,68,.18)";
+  $("verdict").style.color=ok?"var(--green)":"var(--red)";
+  $("dist").textContent="Distancia: "+dist.toFixed(3)+"  ·  umbral "+th.toFixed(2)+(ok?"  → coincide":"  → NO coincide");
+}
+async function test(){
+  if(!enrolled.length){ status("Enrola al menos a una persona primero."); return; }
+  if(busy)return; busy=true;
+  const d=await grab(); busy=false;
+  if(!d){ showVerdict(null); return; }
+  let best=null,bd=Infinity;
+  enrolled.forEach(e=>{ const dist=faceapi.euclideanDistance(d,Float32Array.from(e.desc)); if(dist<bd){bd=dist;best=e;} });
+  showVerdict(best,bd);
+}
+async function liveLoop(){
+  while(live){ await test(); await sleep(600); }
+}
+$("btnEnrol").addEventListener("click",enrol);
+$("btnTest").addEventListener("click",test);
+$("btnLive").addEventListener("click",()=>{
+  live=!live; $("btnLive").textContent=live?"⏸️ Detener":"▶️ Modo continuo";
+  $("btnLive").style.background=live?"#b45309":"#334155";
+  if(live) liveLoop();
+});
+$("btnClear").addEventListener("click",()=>{ if(confirm("¿Borrar todas las huellas de prueba de este dispositivo?")){ enrolled=[]; save(); status("Huellas borradas."); }});
+$("th").addEventListener("input",()=>{ $("thVal").textContent=parseFloat($("th").value).toFixed(2); });
+init();
+</script>
+</body>
+</html>
