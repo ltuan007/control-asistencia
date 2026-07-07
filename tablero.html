@@ -134,6 +134,11 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px;}
     <div class="hint" style="margin-top:10px;">Marcas donde la cara <b>no coincidió</b> con la huella del empleado (o no se detectó cara). Modo observación — no bloquea, solo señala para tu revisión. La foto queda en el iPad donde se marcó.</div>
     <div id="suspList" style="margin-top:10px;overflow-x:auto;"></div>
   </details>
+  <details class="panel" id="comidaPanel" style="margin:0 0 14px;">
+    <summary style="cursor:pointer;font-weight:700;font-size:14.5px;list-style:none;">🍽️ Comida no marcada (turnos largos) <span id="comidaCount" style="background:#7f1d1d;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px;">0</span></summary>
+    <div class="hint" style="margin-top:10px;">Turnos de <b>6 h o más</b> con <b>menos de 60 min</b> de comida marcada — posible comida no registrada (les contaría como trabajada). Solo señala para tu revisión; <b>no descuenta nada</b>. Respeta el periodo seleccionado.</div>
+    <div id="comidaList" style="margin-top:10px;overflow-x:auto;"></div>
+  </details>
   <div class="kpis" id="kpis"></div>
   <div class="findings" id="findings"></div>
   <div id="fleetView">
@@ -314,6 +319,7 @@ $("btnPdf").addEventListener("click",exportPDF);
 function getExp(){const v=$("expStart").value;if(!v)return{exp:null,tol:0};const [h,mi]=v.split(":").map(Number);return{exp:h*60+mi,tol:parseInt($("expTol").value,10)||0};}
 function kpiCard(l,v,s,flag){return '<div class="kpi'+(flag?" flag":"")+'"><div class="l">'+l+'</div><div class="v">'+v+'</div><div class="s">'+(s||"")+'</div></div>';}
 function render(){
+  renderComidaSospechosa();
   const dates=[...selected].sort();const {exp,tol}=getExp();
   const metaDay=parseFloat($("metaDay").value)||0;const base=$("baseSel").value;const capOPS=parseFloat($("capOPS").value)||999999;const capCOR=parseFloat($("capCOR").value)||999999;
   const R=compute(marksFiltered(),dates,personFilter||null,exp,tol,metaDay,base,capOPS,capCOR,EMP_INFO);lastR=R;const K=R.kpis;const isOne=!!personFilter;
@@ -512,6 +518,29 @@ function renderSospechosas(){
   if(!rows.length){ el.innerHTML="<div class='hint' style='margin:0;'>Sin marcas sospechosas. 👌</div>"; return; }
   el.innerHTML="<table><thead><tr><th class='l'>Empleado</th><th>Fecha</th><th>Hora</th><th>Tipo</th><th>Sede</th><th>Dist.</th></tr></thead><tbody>"+
     rows.map(function(m){return "<tr><td class='l'>"+escH(m.n)+"</td><td>"+fmtD2(m.d)+"</td><td>"+hm(m.m)+"</td><td>"+(m.t==="in"?"Entrada":"Salida")+"</td><td>"+escH(m.ubic||"—")+"</td><td>"+(m.dist==null?"sin rostro":(+m.dist).toFixed(3))+"</td></tr>";}).join("")+
+    "</tbody></table>";
+}
+const MEAL_MIN_SHIFT=360, MEAL_EXPECT=60;   // turno ≥6h con <60min de comida marcada → sospechoso (ajustables)
+function renderComidaSospechosa(){
+  const el=$("comidaList"); if(!el) return;
+  const sel=new Set([...selected]); const pd=new Map();
+  marksFiltered().forEach(function(m){ if(!sel.has(m.d))return; const k=m.n+"||"+m.d; if(!pd.has(k))pd.set(k,[]); pd.get(k).push(m); });
+  const rows=[];
+  pd.forEach(function(mm){
+    mm.sort((a,b)=>a.m-b.m);
+    const ins=mm.filter(x=>x.t==="in").map(x=>x.m), outs=mm.filter(x=>x.t==="out").map(x=>x.m);
+    if(!ins.length||!outs.length) return;
+    const span=outs[outs.length-1]-ins[0]; if(span<MEAL_MIN_SHIFT) return;
+    let lun=0,cand=[];
+    for(let i=0;i<mm.length-1;i++){ if(mm[i].t==="out"&&mm[i+1].t==="in"){ const s=mm[i].m,e=mm[i+1].m; if(s<LUNCH_B&&e>LUNCH_A) cand.push(e-s); } }
+    if(cand.length) lun=Math.max(...cand);
+    if(lun<MEAL_EXPECT) rows.push({n:mm[0].n,d:mm[0].d,span:span,lun:lun,ubic:[...new Set(mm.map(x=>x.ubic).filter(Boolean))].join("/")});
+  });
+  rows.sort(function(a,b){ return a.d<b.d?1:(a.d>b.d?-1:a.n.localeCompare(b.n,"es")); });
+  const cnt=$("comidaCount"); if(cnt) cnt.textContent=rows.length;
+  if(!rows.length){ el.innerHTML="<div class='hint' style='margin:0;'>Sin turnos largos sin comida. 👌</div>"; return; }
+  el.innerHTML="<table><thead><tr><th class='l'>Empleado</th><th>Fecha</th><th>Turno</th><th>Comida marcada</th><th>Sede</th></tr></thead><tbody>"+
+    rows.map(function(r){return "<tr><td class='l'>"+escH(r.n)+"</td><td>"+fmtD2(r.d)+"</td><td>"+(r.span/60).toFixed(1)+" h</td><td>"+(r.lun>0? r.lun+" min":"<b style='color:#f59e0b'>sin marcar</b>")+"</td><td>"+escH(r.ubic||"—")+"</td></tr>";}).join("")+
     "</tbody></table>";
 }
 
