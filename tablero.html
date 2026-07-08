@@ -308,9 +308,9 @@ $("cal").addEventListener("click",e=>{
   const wk=e.target.closest(".wk-toggle");
   if(wk&&wk.dataset.week){const ds=wk.dataset.week.split(",").filter(Boolean);if(!ds.length)return;const allOn=ds.every(d=>selected.has(d));ds.forEach(d=>allOn?selected.delete(d):selected.add(d));buildCal();render();}
 });
-$("monthSel").addEventListener("change",e=>{viewMonth=e.target.value;buildCal();});
+$("monthSel").addEventListener("change",e=>{viewMonth=e.target.value;selected=new Set(ALL_DATES.filter(d=>ym(d)===viewMonth&&!EXCL.has(d)));buildCal();render();});
 $("btnMonth").addEventListener("click",()=>{selected=new Set(ALL_DATES.filter(d=>ym(d)===viewMonth));buildCal();render();});
-$("btnLaborales").addEventListener("click",()=>{selected=new Set(ALL_DATES.filter(d=>!EXCL.has(d)));buildCal();render();});
+$("btnLaborales").addEventListener("click",()=>{selected=new Set(ALL_DATES.filter(d=>ym(d)===viewMonth&&!EXCL.has(d)));buildCal();render();});
 $("btnTodos").addEventListener("click",()=>{selected=new Set(ALL_DATES);buildCal();render();});
 $("selPerson").addEventListener("change",e=>{personFilter=e.target.value;render();});
 $("expStart").addEventListener("change",render);$("expTol").addEventListener("change",render);
@@ -495,7 +495,7 @@ async function cargarYRender(){
     ALL_SET=new Set(ALL_DATES);
     MONTHS=[...new Set(ALL_DATES.map(ym))].sort();
     viewMonth=MONTHS.length?MONTHS[MONTHS.length-1]:"";
-    selected=new Set(ALL_DATES.filter(d=>!EXCL.has(d)));
+    selected=new Set(ALL_DATES.filter(d=>ym(d)===viewMonth&&!EXCL.has(d)));
     buildMonthSel();buildCal();buildPersonSelect();buildIncidEmp();renderIncidList();renderSospechosas();render();
   }catch(e){ const s=document.getElementById("subtitle"); if(s) s.textContent="Error al cargar del central: "+e.message; }
 }
