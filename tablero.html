@@ -183,7 +183,10 @@ const ARR_BANDS=[["Antes de 9:00",0,540],["9:00–9:59",540,600],["10:00–10:59
 const DEP_BANDS=[["Antes de 15:00",0,900],["15:00–16:59",900,1020],["17:00–18:59",1020,1140],["19:00–20:59",1140,1260],["21:00 o después",1260,1441]];
 function bandOf(bands,m){for(const b of bands){if(m>=b[1]&&m<b[2])return b[0];}return bands[bands.length-1][0];}
 function p2(n){return String(n).padStart(2,"0");}
-function isSun(d){const a=String(d).split("-");return new Date(+a[0],+a[1]-1,+a[2]).getDay()===0;}  // domingo = día de descanso, no cuenta para Esperado
+function wday(d){const a=String(d).split("-");return new Date(+a[0],+a[1]-1,+a[2]).getDay();}  // 0=Dom … 6=Sáb (calendario real: bisiestos ok)
+function isSun(d){return wday(d)===0;}
+// Día de descanso POR ÁREA: OPS descansa Dom (trabaja L–S, 6 días). COR descansa Sáb y Dom (trabaja L–V, 5 días).
+function isRest(d,area){const wd=wday(d);return wd===0||(area==="COR"&&wd===6);}
 function normName(s){return s.normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim().replace(/\s+/g," ");}
 function weekInfo(d){const [y,m,da]=d.split("-").map(Number);const dt=new Date(y,m-1,da);const wd=dt.getDay();const diff=(wd===0?6:wd-1);const mon=new Date(dt);mon.setDate(da-diff);const sun=new Date(mon);sun.setDate(mon.getDate()+6);return {key:mon.getFullYear()+"-"+p2(mon.getMonth()+1)+"-"+p2(mon.getDate()),label:p2(mon.getDate())+"/"+p2(mon.getMonth()+1)+"–"+p2(sun.getDate())+"/"+p2(sun.getMonth()+1)};}
 function workedMin(mm){let open=null,w=0;for(const x of mm){if(x.t==="in"){if(open===null)open=x.m;}else{if(open!==null){w+=x.m-open;open=null;}}}return w;}
@@ -194,7 +197,7 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
   const areaOf=n=>{const r=info[normName(n)];return r?r.area:null;};const modOf=n=>{const r=info[normName(n)];return r?r.mod:null;};
   const capOf=n=>areaOf(n)==="COR"?capCOR:capOPS;const expFor=(wc,c)=>{let e=0;for(const w in wc)e+=Math.min(metaDay*wc[w],c);return +e.toFixed(1);};
   const _INCID=(typeof INCID!=="undefined"&&INCID)?INCID:{};const _ES=new Set();const incidOf=n=>_INCID[normName(n)]||_ES;
-  const expPeriodoFor=(name,c)=>{const s=incidOf(name);let e=0;for(const w in selByWeekDates){const dd=selByWeekDates[w].filter(d=>!s.has(d)&&!isSun(d)).length;e+=Math.min(metaDay*dd,c);}return +e.toFixed(1);};
+  const expPeriodoFor=(name,c)=>{const s=incidOf(name);const ar=areaOf(name);let e=0;for(const w in selByWeekDates){const dd=selByWeekDates[w].filter(d=>!s.has(d)&&!isRest(d,ar)).length;e+=Math.min(metaDay*dd,c);}return +e.toFixed(1);};
   const sel=new Set(selDates);const pd=new Map();
   for(const mk of marks){if(!sel.has(mk.d))continue;if(person&&mk.n!==person)continue;const k=mk.n+"||"+mk.d;if(!pd.has(k))pd.set(k,[]);pd.get(k).push(mk);}
   const per=new Map();const weeks=new Map();let incDays=0,lunchDays=0,totalMarks=0,workTotPrecise=0;
@@ -205,7 +208,7 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
     if(!per.has(n))per.set(n,{n,dias:0,work:[],arr:[],dep:[],lun:[],nin:0,nout:0,inc:0,sinComida:0,wkAtt:{}});
     const P=per.get(n);P.dias+=1;P.nin+=ins.length;P.nout+=outs.length;
     const wk=weekInfo(day);if(!weeks.has(wk.key))weeks.set(wk.key,{key:wk.key,label:wk.label,ppl:new Set(),dp:0,workH:0,lunH:0});
-    const W=weeks.get(wk.key);W.dp+=1;W.ppl.add(n);if(!isSun(day))P.wkAtt[wk.key]=(P.wkAtt[wk.key]||0)+1;
+    const W=weeks.get(wk.key);W.dp+=1;W.ppl.add(n);if(!isRest(day,areaOf(n)))P.wkAtt[wk.key]=(P.wkAtt[wk.key]||0)+1;
     if(ins.length!==outs.length){P.inc+=1;incDays+=1;}
     const wmin=workedMin(mm);
     if(wmin>0){P.work.push(wmin/60);W.workH+=wmin/60;workTotPrecise+=wmin/60;}
@@ -351,7 +354,7 @@ function render(){
     renderTable(R.per,exp);
   } else { renderDay(personFilter,dates,exp,tol); }
   $("qualityNote").innerHTML="<b>Cómo leer este tablero.</b> «Horas» = <b>trabajado real</b> = suma de cada bloque entrada→salida (ya descuenta comida y todas las salidas). Llegada, salida y comida se miden <b>por empleado</b> (promedio). "+
-    "Hay <b>"+K.incPeople+" empleado(s)</b> con días de marca incompleta ("+K.incDays+" días); ahí el trabajado se subestima e <b>infla lo que deben</b> — corrige esos días antes de pagar. <b>Esperado</b> = "+K.metaDay+" h/día × días laborables ("+(K.base==="periodo"?"del periodo":"asistidos")+", <b>sin domingos</b>), con tope semanal por área (<b>OPS "+K.capOPS+"</b> / <b>COR "+K.capCOR+"</b> h, lun–dom); <b>Saldo</b> = trabajado − esperado (rojo = deben). El GPS no se grafica (iPad fijo).";
+    "Hay <b>"+K.incPeople+" empleado(s)</b> con días de marca incompleta ("+K.incDays+" días); ahí el trabajado se subestima e <b>infla lo que deben</b> — corrige esos días antes de pagar. <b>Esperado</b> = "+K.metaDay+" h/día × días laborables ("+(K.base==="periodo"?"del periodo":"asistidos")+", <b>OPS L–S · COR L–V</b>), con tope semanal por área (<b>OPS "+K.capOPS+" h</b> / <b>COR "+K.capCOR+" h</b>); <b>Saldo</b> = trabajado − esperado (rojo = deben). El GPS no se grafica (iPad fijo).";
   $("foot").textContent="Generado desde asistencia_marcas_20260626.csv · "+MARKS.length+" marcas · "+ALL_DATES.length+" días disponibles.";
 }
 function renderFindings(R,isOne,exp,tol){
@@ -457,7 +460,7 @@ function exportPDF(){
   const doc=new jsPDF({orientation:"landscape",unit:"pt",format:"a4"});
   doc.setFontSize(15);doc.setTextColor(20);doc.text("Control de Asistencia — Detalle por empleado",40,40);
   doc.setFontSize(9);doc.setTextColor(110);
-  doc.text("Periodo: "+periodTxt+"   ·   "+dates.length+" día(s)   ·   Meta "+metaDay+" h/día · tope OPS "+capOPS+"/COR "+capCOR+" h/sem ("+(base==="periodo"?"días del periodo":"días asistidos")+", sin domingos)   ·   Generado: "+new Date().toLocaleString("es-MX"),40,57);
+  doc.text("Periodo: "+periodTxt+"   ·   "+dates.length+" día(s)   ·   Meta "+metaDay+" h/día · tope OPS "+capOPS+"/COR "+capCOR+" h/sem ("+(base==="periodo"?"días del periodo":"días asistidos")+", OPS L–S / COR L–V)   ·   Generado: "+new Date().toLocaleString("es-MX"),40,57);
   doc.autoTable({head,body,foot,startY:70,styles:{fontSize:7.5,cellPadding:3,overflow:"linebreak"},headStyles:{fillColor:[14,23,38],fontSize:7.5},footStyles:{fillColor:[235,239,246],textColor:20,fontStyle:"bold"},alternateRowStyles:{fillColor:[247,249,252]},
     didParseCell:function(data){if(data.section==="body"){const t=(""+data.cell.raw).trim();if(data.column.index===sIdx){if(t.indexOf("-")===0)data.cell.styles.textColor=[185,28,28];else if(t.indexOf("+")===0)data.cell.styles.textColor=[22,101,52];}if((data.column.index===iIdx||data.column.index===lIdx)&&parseInt(t,10)>0)data.cell.styles.textColor=[180,83,9];}},
     didDrawPage:function(){doc.setFontSize(8);doc.setTextColor(150);doc.text("Página "+doc.internal.getNumberOfPages(),doc.internal.pageSize.getWidth()-55,doc.internal.pageSize.getHeight()-14);}});
