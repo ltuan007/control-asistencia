@@ -201,7 +201,7 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
     const n=mm[0].n,day=mm[0].d;mm.sort((a,b)=>a.m-b.m);
     const ins=mm.filter(x=>x.t==="in").map(x=>x.m),outs=mm.filter(x=>x.t==="out").map(x=>x.m);
     totalMarks+=mm.length;
-    if(!per.has(n))per.set(n,{n,dias:0,work:[],arr:[],dep:[],lun:[],nin:0,nout:0,inc:0,wkAtt:{}});
+    if(!per.has(n))per.set(n,{n,dias:0,work:[],arr:[],dep:[],lun:[],nin:0,nout:0,inc:0,sinComida:0,wkAtt:{}});
     const P=per.get(n);P.dias+=1;P.nin+=ins.length;P.nout+=outs.length;
     const wk=weekInfo(day);if(!weeks.has(wk.key))weeks.set(wk.key,{key:wk.key,label:wk.label,ppl:new Set(),dp:0,workH:0,lunH:0});
     const W=weeks.get(wk.key);W.dp+=1;W.ppl.add(n);P.wkAtt[wk.key]=(P.wkAtt[wk.key]||0)+1;
@@ -211,11 +211,12 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
     if(ins.length&&outs.length&&outs[outs.length-1]>ins[0]){P.arr.push(ins[0]);P.dep.push(outs[outs.length-1]);}
     let cand=[];for(let i=0;i<mm.length-1;i++){if(mm[i].t==="out"&&mm[i+1].t==="in"){const s=mm[i].m,e=mm[i+1].m;if(s<LUNCH_B&&e>LUNCH_A)cand.push(e-s);}}
     if(cand.length){const ld=Math.max(...cand);P.lun.push(ld);lunchDays++;W.lunH+=ld/60;}
+    {const _mms=(typeof MEAL_MIN_SHIFT!=="undefined")?MEAL_MIN_SHIFT:360,_mex=(typeof MEAL_EXPECT!=="undefined")?MEAL_EXPECT:60;if(ins.length&&outs.length){const _span=outs[outs.length-1]-ins[0],_rl=cand.length?Math.max(...cand):0;if(_span>=_mms&&_rl<_mex)P.sinComida++;}}
   }
   const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:null;
   const per2=[...per.values()].map(P=>{const lateP=(expStart!=null)?P.arr.filter(a=>a>expStart+tol).length:0;
     const totH=+P.work.reduce((x,y)=>x+y,0).toFixed(1);const cap=capOf(P.n);const exp=(base==="periodo")?expPeriodoFor(P.n,cap):expFor(P.wkAtt,cap);const ausDias=selDates.filter(d=>incidOf(P.n).has(d)).length;
-    return {n:P.n,dias:P.dias,totH,exp,ausDias,saldo:+(totH-exp).toFixed(1),area:areaOf(P.n),mod:modOf(P.n),avgH:P.work.length?+mean(P.work).toFixed(2):null,
+    return {n:P.n,dias:P.dias,totH,exp,ausDias,sinComida:P.sinComida,saldo:+(totH-exp).toFixed(1),area:areaOf(P.n),mod:modOf(P.n),avgH:P.work.length?+mean(P.work).toFixed(2):null,
       lunTot:+P.lun.reduce((x,y)=>x+y,0).toFixed(0),arrAvg:P.arr.length?Math.round(mean(P.arr)):null,depAvg:P.dep.length?Math.round(mean(P.dep)):null,
       lunAvg:P.lun.length?Math.round(mean(P.lun)):null,nin:P.nin,nout:P.nout,io:P.nin+P.nout,inc:P.inc,late:lateP};});
   const arrH={},depH={},lunB={},arrBand={},depBand={};
@@ -224,7 +225,7 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
     if(p.depAvg!=null){depH[Math.floor(p.depAvg/60)]=(depH[Math.floor(p.depAvg/60)]||0)+1;depBand[bandOf(DEP_BANDS,p.depAvg)]++;}
     if(p.lunAvg!=null){lunB[lunchBucket(p.lunAvg)]++;}});
   const withArr=per2.filter(p=>p.arrAvg!=null),withDep=per2.filter(p=>p.depAvg!=null),withLun=per2.filter(p=>p.lunAvg!=null),withWork=per2.filter(p=>p.avgH!=null);
-  if(base==="periodo"&&!person){const seenNorm=new Set(per2.map(p=>normName(p.n)));const rosterNames={};for(const k in info)rosterNames[k]=info[k].nombre;marks.forEach(m=>{const k=normName(m.n);if(!(k in rosterNames))rosterNames[k]=m.n;});for(const k in rosterNames){if(!seenNorm.has(k)){const nm=rosterNames[k];const eA=expPeriodoFor(nm,capOf(nm));const ausA=selDates.filter(d=>incidOf(nm).has(d)).length;per2.push({n:nm,dias:0,totH:0,exp:eA,ausDias:ausA,saldo:+(-eA).toFixed(1),area:areaOf(nm),mod:modOf(nm),avgH:null,lunTot:0,arrAvg:null,depAvg:null,lunAvg:null,nin:0,nout:0,io:0,inc:0,late:0});}}}
+  if(base==="periodo"&&!person){const seenNorm=new Set(per2.map(p=>normName(p.n)));const rosterNames={};for(const k in info)rosterNames[k]=info[k].nombre;marks.forEach(m=>{const k=normName(m.n);if(!(k in rosterNames))rosterNames[k]=m.n;});for(const k in rosterNames){if(!seenNorm.has(k)){const nm=rosterNames[k];const eA=expPeriodoFor(nm,capOf(nm));const ausA=selDates.filter(d=>incidOf(nm).has(d)).length;per2.push({n:nm,dias:0,totH:0,exp:eA,ausDias:ausA,sinComida:0,saldo:+(-eA).toFixed(1),area:areaOf(nm),mod:modOf(nm),avgH:null,lunTot:0,arrAvg:null,depAvg:null,lunAvg:null,nin:0,nout:0,io:0,inc:0,late:0});}}}
   const weeksArr=[...weeks.values()].sort((a,b)=>a.key<b.key?-1:1).map(w=>({key:w.key,label:w.label,personas:w.ppl.size,dp:w.dp,workH:+w.workH.toFixed(1),lunH:+w.lunH.toFixed(1)}));
   const lunTotH=per2.reduce((s,p)=>s+p.lunTot,0)/60;
   return {per:per2,arrH,depH,lunB,arrBand,depBand,weeks:weeksArr,denom:{arr:withArr.length,dep:withDep.length,lun:withLun.length},
@@ -428,12 +429,12 @@ function renderDay(person,dates,exp,tol){
     return "<tr><td class='l'>"+fmtD(r.d)+"</td><td"+(late?" class='flagcell'":"")+">"+hm(r.arr)+(late?" ⚠":"")+"</td><td>"+hm(r.dep)+"</td><td>"+(r.work==null?"—":r.work+" h")+"</td><td>"+(r.lun==null?"—":r.lun+" min")+"</td><td>"+r.nin+"</td><td>"+r.nout+"</td><td>"+(r.ubic||"—")+"</td><td>"+(r.incid?"<span class='badinc'>"+escH(r.incid)+"</span>":(r.ok?"<span class='badok'>OK</span>":"<span class='badno'>Incompleto</span>"))+"</td></tr>";}).join("")||"<tr><td colspan='9' class='l'>Sin días</td></tr>";
 }
 let COLS;
-function buildCols(exp){COLS=[{f:"n",l:"Empleado",cls:"l"},{f:"area",l:"Área",cls:"l",fmt:v=>v||"?"},{f:"mod",l:"Mod.",cls:"l",fmt:v=>v||"?"},{f:"dias",l:"Días"},{f:"totH",l:"Trabajado",fmt:v=>v.toFixed(1)+" h"},{f:"exp",l:"Esperado",fmt:v=>v.toFixed(1)+" h"},{f:"saldo",l:"Saldo",fmt:v=>(v>0?"+":"")+v.toFixed(1)+" h"},{f:"avgH",l:"Prom h/día",fmt:v=>v==null?"—":v.toFixed(2)},{f:"arrAvg",l:"Llegada",fmt:hm},{f:"depAvg",l:"Salida",fmt:hm},{f:"lunAvg",l:"Comida",fmt:v=>v==null?"—":v+" min"},{f:"nin",l:"Entr."},{f:"nout",l:"Sal."}];if(exp!=null)COLS.push({f:"late",l:"Tardanzas"});COLS.push({f:"inc",l:"Días incompl."});}
+function buildCols(exp){COLS=[{f:"n",l:"Empleado",cls:"l"},{f:"area",l:"Área",cls:"l",fmt:v=>v||"?"},{f:"mod",l:"Mod.",cls:"l",fmt:v=>v||"?"},{f:"dias",l:"Días"},{f:"totH",l:"Trabajado",fmt:v=>v.toFixed(1)+" h"},{f:"exp",l:"Esperado",fmt:v=>v.toFixed(1)+" h"},{f:"saldo",l:"Saldo",fmt:v=>(v>0?"+":"")+v.toFixed(1)+" h"},{f:"avgH",l:"Prom h/día",fmt:v=>v==null?"—":v.toFixed(2)},{f:"arrAvg",l:"Llegada",fmt:hm},{f:"depAvg",l:"Salida",fmt:hm},{f:"lunAvg",l:"Comida",fmt:v=>v==null?"—":v+" min"},{f:"nin",l:"Entr."},{f:"nout",l:"Sal."}];if(exp!=null)COLS.push({f:"late",l:"Tardanzas"});COLS.push({f:"inc",l:"Días incompl."});COLS.push({f:"sinComida",l:"Comida s/marcar"});}
 function renderTable(per,exp){
   buildCols(exp);const thead=$("tbl").querySelector("thead"),tbody=$("tbl").querySelector("tbody");
   thead.innerHTML="<tr>"+COLS.map(c=>'<th class="'+(c.cls||"")+'" data-f="'+c.f+'">'+c.l+(sortField===c.f?(sortDir==="asc"?" ▲":" ▼"):"")+'</th>').join("")+"</tr>";
   const sorted=sortPer(per);
-  tbody.innerHTML=sorted.map(p=>"<tr>"+COLS.map(c=>{let v=p[c.f];v=c.fmt?c.fmt(v):v;let cls=(c.cls||"");if((c.f==="inc"&&p.inc>0)||(c.f==="late"&&p.late>0))cls+=" flagcell";if(c.f==="saldo")cls+=(p.saldo<0?" flagcell":(p.saldo>0?" badok":""));return '<td class="'+cls.trim()+'">'+v+"</td>";}).join("")+"</tr>").join("");
+  tbody.innerHTML=sorted.map(p=>"<tr>"+COLS.map(c=>{let v=p[c.f];v=c.fmt?c.fmt(v):v;let cls=(c.cls||"");if((c.f==="inc"&&p.inc>0)||(c.f==="late"&&p.late>0)||(c.f==="sinComida"&&p.sinComida>0))cls+=" flagcell";if(c.f==="saldo")cls+=(p.saldo<0?" flagcell":(p.saldo>0?" badok":""));return '<td class="'+cls.trim()+'">'+v+"</td>";}).join("")+"</tr>").join("");
   thead.querySelectorAll("th").forEach(th=>th.addEventListener("click",()=>{const f=th.dataset.f;if(sortField===f)sortDir=sortDir==="asc"?"desc":"asc";else{sortField=f;sortDir=f==="n"?"asc":"desc";}renderTable(per,exp);}));
 }
 /* ===== Orden + Export PDF ===== */
