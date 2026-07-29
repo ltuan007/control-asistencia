@@ -196,8 +196,11 @@ function bandOf(bands,m){for(const b of bands){if(m>=b[1]&&m<b[2])return b[0];}r
 function p2(n){return String(n).padStart(2,"0");}
 function wday(d){const a=String(d).split("-");return new Date(+a[0],+a[1]-1,+a[2]).getDay();}  // 0=Dom … 6=Sáb (calendario real: bisiestos ok)
 function isSun(d){return wday(d)===0;}
-// Día de descanso POR ÁREA: OPS descansa Dom (trabaja L–S, 6 días). COR descansa Sáb y Dom (trabaja L–V, 5 días).
-function isRest(d,area){const wd=wday(d);return wd===0||(area==="COR"&&wd===6);}
+// Áreas con régimen 40 h / L–V (descansan Sáb+Dom). El resto: 48 h / L–S (descansan solo Dom).
+// Al definir áreas nuevas (Música, Agencia, Medios, Admón…), agrega aquí las que sean de 40 h.
+const AREAS_40=["COR","ADMON","ADMINISTRACION"];
+function area40(a){a=String(a||"").trim().toUpperCase();return AREAS_40.some(x=>String(x).toUpperCase()===a);}
+function isRest(d,area){const wd=wday(d);return wd===0||(area40(area)&&wd===6);}
 function normName(s){return s.normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim().replace(/\s+/g," ");}
 function weekInfo(d){const [y,m,da]=d.split("-").map(Number);const dt=new Date(y,m-1,da);const wd=dt.getDay();const diff=(wd===0?6:wd-1);const mon=new Date(dt);mon.setDate(da-diff);const sun=new Date(mon);sun.setDate(mon.getDate()+6);return {key:mon.getFullYear()+"-"+p2(mon.getMonth()+1)+"-"+p2(mon.getDate()),label:p2(mon.getDate())+"/"+p2(mon.getMonth()+1)+"–"+p2(sun.getDate())+"/"+p2(sun.getMonth()+1)};}
 function workedMin(mm){let open=null,w=0;for(const x of mm){if(x.t==="in"){if(open===null)open=x.m;}else{if(open!==null){w+=x.m-open;open=null;}}}return w;}
@@ -206,7 +209,7 @@ function compute(marks,selDates,person,expStart,tol,metaDay,base,capOPS,capCOR,i
   metaDay=(metaDay==null)?8:metaDay;base=base||"periodo";capOPS=(capOPS==null)?48:capOPS;capCOR=(capCOR==null)?40:capCOR;info=info||{};const selCount=selDates.length;
   const selByWeek={};const selByWeekDates={};selDates.forEach(d=>{const wk=weekInfo(d).key;selByWeek[wk]=(selByWeek[wk]||0)+1;(selByWeekDates[wk]=selByWeekDates[wk]||[]).push(d);});
   const areaOf=n=>{const r=info[normName(n)];return r?r.area:null;};const modOf=n=>{const r=info[normName(n)];return r?r.mod:null;};
-  const capOf=n=>areaOf(n)==="COR"?capCOR:capOPS;const expFor=(wc,c)=>{let e=0;for(const w in wc)e+=Math.min(metaDay*wc[w],c);return +e.toFixed(1);};
+  const capOf=n=>area40(areaOf(n))?capCOR:capOPS;const expFor=(wc,c)=>{let e=0;for(const w in wc)e+=Math.min(metaDay*wc[w],c);return +e.toFixed(1);};
   const _INCID=(typeof INCID!=="undefined"&&INCID)?INCID:{};const _ES=new Set();const incidOf=n=>_INCID[normName(n)]||_ES;
   const expPeriodoFor=(name,c)=>{const s=incidOf(name);const ar=areaOf(name);let e=0;for(const w in selByWeekDates){const dd=selByWeekDates[w].filter(d=>!s.has(d)&&!isRest(d,ar)).length;e+=Math.min(metaDay*dd,c);}return +e.toFixed(1);};
   const sel=new Set(selDates);const pd=new Map();
@@ -543,7 +546,7 @@ function nominaData(){
   const rows=[];
   per.forEach(function(p){
     const info=EMP_INFO[normName(p.n)];const area=info?info.area:null;
-    const cap=(area==="COR")?capCOR:capOPS;
+    const cap=area40(area)?capCOR:capOPS;
     const inc=(typeof INCID!=="undefined"&&INCID&&INCID[normName(p.n)])||new Set();
     function espCon(exclSet){const byW={};selDates.forEach(function(d){if(isRest(d,area))return;if(inc.has(d))return;if(exclSet&&exclSet.has(d))return;const wk=weekInfo(d).key;byW[wk]=(byW[wk]||0)+1;});let e=0;for(const w in byW)e+=Math.min(metaDay*byW[w],cap);return e;}
     const espE=espCon(null),espA=espCon(p.excl);
