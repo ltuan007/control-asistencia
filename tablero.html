@@ -7,6 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{--bg:#eef1f6;--card:#fff;--header:#0e1726;--header2:#1b2a44;--text:#1c2535;--muted:#6b7a90;--line:#e6eaf1;--blue:#0ea5e9;--green:#16a34a;--amber:#d97706;--red:#dc2626;--radius:14px;--gap:16px;}
 *{margin:0;padding:0;box-sizing:border-box;}
@@ -133,6 +134,16 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px;}
     <summary style="cursor:pointer;font-weight:700;font-size:14.5px;list-style:none;">🕵️ Marcas sospechosas (rostro) <span id="suspCount" style="background:#7f1d1d;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px;">0</span></summary>
     <div class="hint" style="margin-top:10px;">Marcas donde la cara <b>no coincidió</b> con la huella del empleado (o no se detectó cara). Modo observación — no bloquea, solo señala para tu revisión. La foto queda en el iPad donde se marcó.</div>
     <div id="suspList" style="margin-top:10px;overflow-x:auto;"></div>
+  </details>
+  <details class="panel" id="nomPanel" style="margin:0 0 14px;">
+    <summary style="cursor:pointer;font-weight:700;font-size:14.5px;list-style:none;">💸 Nómina · Descuentos por horas <span style="font-weight:400;color:var(--muted);font-size:12px;">(estricto vs ajustado — clic para abrir)</span></summary>
+    <div class="hint" style="margin-top:10px;"><b>% ESTRICTO (lo que aplica):</b> cuenta solo lo marcado; en turnos ≥6 h sin comida completa se <b>asume</b> la comida indicada y se resta. <b>% AJUSTADO:</b> igual, pero los días con marcas incompletas se <b>excluyen</b> del cálculo (se resuelven por disciplina, no por dinero). % descuento = faltante ÷ esperado; la versión c/tolerancia perdona ese margen. <b>🚩 ACTA</b> = 3+ faltas de registro (días incompletos + comidas sin marcar) en el periodo → levantar acta administrativa. ⚠️ El descuento y su tope valídalos con tu laboralista (LFT); esto es informativo.</div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:6px;">
+      <div class="grp"><span>Comida asumida (min)</span><input type="number" id="nomComida" min="0" step="15" value="60"></div>
+      <div class="grp"><span>Tolerancia (%)</span><input type="number" id="nomTol" min="0" step="1" value="5"></div>
+      <button class="btn btn-pdf" id="btnNomXlsx" style="height:38px;">⬇ Exportar Excel</button>
+    </div>
+    <div id="nomList" style="margin-top:12px;overflow-x:auto;"></div>
   </details>
   <details class="panel" id="comidaPanel" style="margin:0 0 14px;">
     <summary style="cursor:pointer;font-weight:700;font-size:14.5px;list-style:none;">🍽️ Comida no marcada (turnos largos) <span id="comidaCount" style="background:#7f1d1d;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px;">0</span></summary>
@@ -324,7 +335,7 @@ $("btnPdf").addEventListener("click",exportPDF);
 function getExp(){const v=$("expStart").value;if(!v)return{exp:null,tol:0};const [h,mi]=v.split(":").map(Number);return{exp:h*60+mi,tol:parseInt($("expTol").value,10)||0};}
 function kpiCard(l,v,s,flag){return '<div class="kpi'+(flag?" flag":"")+'"><div class="l">'+l+'</div><div class="v">'+v+'</div><div class="s">'+(s||"")+'</div></div>';}
 function render(){
-  renderComidaSospechosa();
+  renderComidaSospechosa();renderNomina();
   const dates=[...selected].sort();const {exp,tol}=getExp();
   const metaDay=parseFloat($("metaDay").value)||0;const base=$("baseSel").value;const capOPS=parseFloat($("capOPS").value)||999999;const capCOR=parseFloat($("capCOR").value)||999999;
   const R=compute(marksFiltered(),dates,personFilter||null,exp,tol,metaDay,base,capOPS,capCOR,EMP_INFO);lastR=R;const K=R.kpis;const isOne=!!personFilter;
@@ -504,6 +515,74 @@ async function cargarYRender(){
     buildMonthSel();buildCal();buildPersonSelect();buildIncidEmp();renderIncidList();renderSospechosas();render();
   }catch(e){ const s=document.getElementById("subtitle"); if(s) s.textContent="Error al cargar del central: "+e.message; }
 }
+/* ===== Nómina · Descuentos por horas ===== */
+function nominaData(){
+  const comidaAsum=parseFloat($("nomComida")?$("nomComida").value:"60")||60;
+  const tolPts=parseFloat($("nomTol")?$("nomTol").value:"5")||0;
+  const metaDay=parseFloat($("metaDay").value)||8;
+  const capOPS=parseFloat($("capOPS").value)||999999;
+  const capCOR=parseFloat($("capCOR").value)||999999;
+  const selDates=[...selected].sort();
+  const sel=new Set(selDates);const pd=new Map();
+  marksFiltered().forEach(function(m){if(!sel.has(m.d))return;const k=m.n+"||"+m.d;if(!pd.has(k))pd.set(k,[]);pd.get(k).push(m);});
+  const per=new Map();
+  function P(n){if(!per.has(n))per.set(n,{n:n,workAll:0,workComp:0,ajuste:0,excl:new Set(),diasInc:0,comAsum:0});return per.get(n);}
+  pd.forEach(function(mm){
+    mm.sort(function(a,b){return a.m-b.m;});
+    const n=mm[0].n,d=mm[0].d,p=P(n);
+    const ins=mm.filter(function(x){return x.t==="in";}),outs=mm.filter(function(x){return x.t==="out";});
+    const w=workedMin(mm);
+    if(ins.length!==outs.length||!ins.length||!outs.length){p.diasInc++;p.excl.add(d);p.workAll+=w;return;}
+    let cand=[];for(let i=0;i<mm.length-1;i++){if(mm[i].t==="out"&&mm[i+1].t==="in"){const s=mm[i].m,e=mm[i+1].m;if(s<LUNCH_B&&e>LUNCH_A)cand.push(e-s);}}
+    const lun=cand.length?Math.max.apply(null,cand):0;
+    const span=outs[outs.length-1].m-ins[0].m;
+    let adj=0;if(span>=MEAL_MIN_SHIFT&&lun<comidaAsum){adj=comidaAsum-lun;p.comAsum++;}
+    p.workAll+=w;p.workComp+=w;p.ajuste+=adj;
+  });
+  for(const k in EMP_INFO){P(EMP_INFO[k].nombre);}
+  const rows=[];
+  per.forEach(function(p){
+    const info=EMP_INFO[normName(p.n)];const area=info?info.area:null;
+    const cap=(area==="COR")?capCOR:capOPS;
+    const inc=(typeof INCID!=="undefined"&&INCID&&INCID[normName(p.n)])||new Set();
+    function espCon(exclSet){const byW={};selDates.forEach(function(d){if(isRest(d,area))return;if(inc.has(d))return;if(exclSet&&exclSet.has(d))return;const wk=weekInfo(d).key;byW[wk]=(byW[wk]||0)+1;});let e=0;for(const w in byW)e+=Math.min(metaDay*byW[w],cap);return e;}
+    const espE=espCon(null),espA=espCon(p.excl);
+    const trabE=(p.workAll-p.ajuste)/60,trabA=(p.workComp-p.ajuste)/60;
+    const faltE=Math.max(0,espE-trabE),faltA=Math.max(0,espA-trabA);
+    const pctE=espE>0?faltE/espE*100:0,pctA=espA>0?faltA/espA*100:0;
+    const faltReg=p.diasInc+p.comAsum;
+    rows.push({n:p.n,area:area||"?",espE:+espE.toFixed(1),espA:+espA.toFixed(1),marc:+(p.workAll/60).toFixed(1),adj:+(p.ajuste/60).toFixed(1),trabE:+trabE.toFixed(1),trabA:+trabA.toFixed(1),faltE:+faltE.toFixed(1),faltA:+faltA.toFixed(1),pctE:+pctE.toFixed(1),pctETol:+Math.max(0,pctE-tolPts).toFixed(1),pctA:+pctA.toFixed(1),pctATol:+Math.max(0,pctA-tolPts).toFixed(1),diasInc:p.diasInc,comAsum:p.comAsum,faltReg:faltReg,acta:faltReg>=3});
+  });
+  rows.sort(function(a,b){return b.pctE-a.pctE||a.n.localeCompare(b.n,"es");});
+  return rows;
+}
+function renderNomina(){
+  const el=$("nomList");if(!el)return;
+  const rows=nominaData();
+  if(!rows.length){el.innerHTML="<div class='hint' style='margin:0;'>Sin datos en el periodo.</div>";return;}
+  el.innerHTML="<table><thead><tr><th class='l'>Empleado</th><th>Área</th><th>Esperado</th><th>Marcado</th><th>Comida asum. (−)</th><th>Trabajado</th><th>% ESTRICTO</th><th>% Estr. c/tol</th><th>% AJUSTADO</th><th>% Aj. c/tol</th><th>Días incompl.</th><th>Faltas reg.</th><th></th></tr></thead><tbody>"+
+    rows.map(function(r){const hot=r.pctE>0?" class='flagcell'":"";return "<tr><td class='l'>"+escH(r.n)+"</td><td>"+escH(r.area)+"</td><td>"+r.espE.toFixed(1)+" h</td><td>"+r.marc.toFixed(1)+" h</td><td>"+(r.adj>0?("−"+r.adj.toFixed(1)+" h"):"—")+"</td><td>"+r.trabE.toFixed(1)+" h</td><td"+hot+">"+r.pctE.toFixed(1)+"%</td><td>"+r.pctETol.toFixed(1)+"%</td><td>"+r.pctA.toFixed(1)+"%</td><td>"+r.pctATol.toFixed(1)+"%</td><td>"+r.diasInc+"</td><td>"+r.faltReg+"</td><td>"+(r.acta?"<span class='badno'>🚩 ACTA</span>":"")+"</td></tr>";}).join("")+
+    "</tbody></table>";
+}
+function exportNominaXlsx(){
+  if(!window.XLSX){alert("No cargó el generador de Excel. Revisa tu conexión e inténtalo de nuevo.");return;}
+  const rows=nominaData();const dates=[...selected].sort();
+  const comidaAsum=parseFloat($("nomComida").value)||60;const tol=parseFloat($("nomTol").value)||0;
+  const aoa=[["Reporte de nómina · Descuentos por horas"],
+    ["Periodo:",(dates.length?(dates[0]+" a "+dates[dates.length-1]):"—"),"Días:",dates.length,"Comida asumida (min):",comidaAsum,"Tolerancia (%):",tol],
+    ["ESTRICTO = solo lo marcado (comida asumida restada). AJUSTADO = excluye días con marcas incompletas. % en puntos porcentuales. Valida descuentos con tu laboralista (LFT)."],
+    [],
+    ["Empleado","Área","Esperado ESTRICTO (h)","Marcado (h)","Comida asumida (−h)","Trabajado ESTRICTO (h)","Faltante ESTRICTO (h)","% desc ESTRICTO","% desc ESTR. c/tol","Esperado AJUSTADO (h)","Trabajado AJUSTADO (h)","Faltante AJUSTADO (h)","% desc AJUSTADO","% desc AJ. c/tol","Días incompletos","Comidas asumidas","Faltas de registro","Acta administrativa"]];
+  rows.forEach(function(r){aoa.push([r.n,r.area,r.espE,r.marc,r.adj,r.trabE,r.faltE,r.pctE,r.pctETol,r.espA,r.trabA,r.faltA,r.pctA,r.pctATol,r.diasInc,r.comAsum,r.faltReg,r.acta?"SÍ — levantar acta":""]);});
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"]=[{wch:26},{wch:6},{wch:14},{wch:11},{wch:13},{wch:15},{wch:14},{wch:12},{wch:13},{wch:15},{wch:16},{wch:15},{wch:12},{wch:12},{wch:12},{wch:12},{wch:12},{wch:18}];
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Nómina");
+  XLSX.writeFile(wb,"Nomina_"+(dates[0]||"x")+"_a_"+(dates[dates.length-1]||"x")+".xlsx");
+}
+if($("btnNomXlsx"))$("btnNomXlsx").addEventListener("click",exportNominaXlsx);
+if($("nomComida"))$("nomComida").addEventListener("change",renderNomina);
+if($("nomTol"))$("nomTol").addEventListener("change",renderNomina);
+
 /* ===== Incidencias (RRHH) ===== */
 function escH(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 function fmtD2(d){if(!d)return "—";const a=String(d).slice(0,10).split("-");return a.length===3?a[2]+"/"+a[1]:String(d);}
